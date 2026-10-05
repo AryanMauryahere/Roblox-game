@@ -14,5 +14,5 @@ A survival horror Roblox game inspired by the 2026 Resident Evil adaptation. Bui
 
 ## 🛠️ Built With
 - **Roblox Studio** (Luau)
-- **Ropilot Studio** (GPT-6 Astra engine)
+- **Ropilot Studio** 
 - **VS Code** & **Git**
