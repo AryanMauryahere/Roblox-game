@@ -10207,6 +10207,10 @@ remote.OnClientEvent:Connect(function(action, a, b)
 	if action == "Notice" then
 		toast(tostring(a), b)
 	elseif action == "Complete" then
+		endTitle.Text = "DELIVERY COMPLETE"
+		showComplete(a, b)
+	elseif action == "ChapterComplete" then
+		endTitle.Text = "HOUSE SECURED"
 		showComplete(a, b)
 	end
 end)
@@ -10500,6 +10504,7 @@ local originalMouseBehavior = UserInputService.MouseBehavior
 local cameraStates = {}
 local poseCaches = {}
 local connections = {}
+local nextVehicleInput = 0
 
 local function inform(message)
 	notice = message
@@ -10516,6 +10521,12 @@ local function armed()
 end
 local function reloading()
 	return player:GetAttribute("WeaponReloading") == true
+end
+local function seated()
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	return player:GetAttribute("DrivingCourierVan") == true
+		or (humanoid and (humanoid.SeatPart ~= nil or humanoid.Sit))
 end
 local function canInput()
 	return not UserInputService:GetFocusedTextBox() and not GuiService.MenuIsOpen
@@ -10539,6 +10550,8 @@ local function restoreCamera()
 	table.clear(cameraStates)
 end
 local function action(name, state, input)
+	-- Let VehicleSeat own the movement/gamepad controls while driving.
+	if seated() then aiming = false return Enum.ContextActionResult.Pass end
 	if not canInput() then return Enum.ContextActionResult.Pass end
 	local living = alive()
 	if not living then return Enum.ContextActionResult.Pass end
@@ -10620,6 +10633,16 @@ for _, attribute in ipairs({"WeaponMagazine","WeaponReserve"}) do
 end
 updateLabels()
 local function updateControls()
+	if seated() then
+		if UserInputService.PreferredInput == Enum.PreferredInput.Touch then
+			controls.Text = "MOVEMENT STICK: DRIVE / STEER  |  JUMP: GET OUT"
+		elseif UserInputService.PreferredInput == Enum.PreferredInput.Gamepad then
+			controls.Text = "LEFT STICK: DRIVE / STEER  |  A OR X: GET OUT"
+		else
+			controls.Text = "W/S: DRIVE / REVERSE  |  A/D: STEER  |  SPACE/E: GET OUT"
+		end
+		return
+	end
 	if UserInputService.PreferredInput == Enum.PreferredInput.Touch then
 		controls.Text = "TAP AIM TO TOGGLE  •  FIRE  •  RELOAD"
 	elseif UserInputService.PreferredInput == Enum.PreferredInput.Gamepad then
@@ -10630,12 +10653,13 @@ local function updateControls()
 end
 updateControls()
 table.insert(connections, UserInputService:GetPropertyChangedSignal("PreferredInput"):Connect(updateControls))
+table.insert(connections, player:GetAttributeChangedSignal("DrivingCourierVan"):Connect(updateControls))
 
 -- Shoulder camera sweeps a small sphere from the character to prevent wall clipping.
 RunService:BindToRenderStep("SurvivalShoulderCamera", Enum.RenderPriority.Camera.Value, function(dt)
 	local living, humanoid, root = alive()
 	local camera = workspace.CurrentCamera
-	if not armed() or not living or not camera then
+	if not armed() or not living or not camera or seated() then
 		restoreCamera()
 		reticle.Visible = false
 		touchDelta = Vector2.zero
@@ -10774,7 +10798,9 @@ table.insert(connections, RunService.PreSimulation:Connect(function()
 		if character and humanoid and root then
 			local cache = getPose(character)
 			if cache then
-				if owner:GetAttribute("WeaponArmed") and humanoid.Health > 0 then
+				if owner:GetAttribute("WeaponArmed") and humanoid.Health > 0
+					and humanoid.SeatPart == nil and not humanoid.Sit
+					and not owner:GetAttribute("DrivingCourierVan") then
 					cache.active = true
 					local right, left = Config.ReloadPoses[1][2], Config.ReloadPoses[1][3]
 					local loading = owner:GetAttribute("WeaponReloading")
@@ -10851,8 +10877,24 @@ end))
 table.insert(connections, RunService.Heartbeat:Connect(function()
 	local now = workspace:GetServerTimeNow()
 	local loading = reloading()
-	reloadTrack.Visible = loading
-	if loading then
+	local driving = seated()
+	if driving and os.clock() >= nextVehicleInput then
+		nextVehicleInput = os.clock() + 1 / 15
+		local _, humanoid = alive()
+		local seat = humanoid and humanoid.SeatPart
+		local vehicleInput = seat and seat:FindFirstChild("CourierDriveInput")
+		if seat and seat:IsA("VehicleSeat") and vehicleInput and vehicleInput:IsA("RemoteEvent") then
+			vehicleInput:FireServer(canInput() and seat.ThrottleFloat or 0, canInput() and seat.SteerFloat or 0)
+		end
+	end
+	for _, name in ipairs({"WeaponAim", "WeaponFire", "WeaponReload", "WeaponHolster"}) do
+		local button = ContextActionService:GetButton(name)
+		if button then button.Visible = not driving end
+	end
+	reloadTrack.Visible = loading and not driving
+	if driving then
+		status.Text = "DRIVING TO THE TUNNEL"
+	elseif loading then
 		local remaining = math.max(0,(player:GetAttribute("WeaponReloadEnd") or now)-now)
 		local progress = math.clamp(1-remaining/Config.ReloadSeconds,0,1)
 		reloadTrack.Fill.Size = UDim2.fromScale(progress,1)
@@ -11527,7 +11569,7 @@ end)
 						<int name="MaxVisibleGraphemes">-1</int>
 						<string name="OpenTypeFeatures"></string>
 						<bool name="RichText">false</bool>
-						<string name="Text">RMB AIM  &#226;&#128;&#162;  LMB FIRE  &#226;&#128;&#162;  R RELOAD  &#226;&#128;&#162;  V HOLSTER</string>
+						<string name="Text">RMB AIM  &#195;&#162;&#194;&#128;&#194;&#162;  LMB FIRE  &#195;&#162;&#194;&#128;&#194;&#162;  R RELOAD  &#195;&#162;&#194;&#128;&#194;&#162;  V HOLSTER</string>
 						<Color3 name="TextColor3">
 							<R>0.874509811</R>
 							<G>0.898039222</G>
@@ -12480,9 +12522,13 @@ local doorOpened = false
 local function updateObjective(player)
 	local text, pos
 	if player:GetAttribute("Delivered") then
-		text = "Delivery complete."
+		-- The escape chapter owns objectives once the specimen is loaded.
+		if player:GetAttribute("EscapeStage") then return end
+		text = "Enter the courier van and drive to the tunnel."
 	elseif player:GetAttribute("HasPackage") then
-		text, pos = "Get the specimen case back to your courier van.", VAN_CF.Position
+		local van = world:FindFirstChild("CourierVan")
+		local dropoff = van and van:FindFirstChild("DropOff")
+		text, pos = "Get the specimen case back to your courier van.", dropoff and dropoff.Position or VAN_CF.Position
 	elseif doorOpened then
 		text, pos = "Retrieve the specimen case from the isolation ward upstairs.", PACKAGE_CF.Position
 	elseif player:GetAttribute("HasKeycard") then
@@ -12707,16 +12753,18 @@ local function buildVan()
 		if player:GetAttribute("Delivered") then
 			return
 		end
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if not root or not humanoid or humanoid.Health <= 0 or (root.Position - dropoff.Position).Magnitude > 11 then return end
 		if not player:GetAttribute("HasPackage") then
 			notify(player, "NOTHING TO DELIVER YET", "warn")
 			return
 		end
 		player:SetAttribute("HasPackage", false)
 		player:SetAttribute("Delivered", true)
-		local finish = workspace:GetServerTimeNow()
-		player:SetAttribute("FinishTime", finish)
 		updateObjective(player)
-		remote:FireClient(player, "Complete", finish - (player:GetAttribute("StartTime") or finish), player:GetAttribute("Deaths") or 0)
+		notify(player, "SPECIMEN LOADED. Enter the driver's seat.", "item")
 	end)
 end
 buildVan()
@@ -12761,11 +12809,13 @@ local function onCharacter(player, character)
 	end
 	humanoid.MaxHealth = CFG.MaxHealth
 
-	local cf = checkpoints[player]
+	local escapeCheckpoint = player:GetAttribute("EscapeCheckpoint")
+	local cf = escapeCheckpoint or checkpoints[player]
 	if cf then
 		local root = character:WaitForChild("HumanoidRootPart", 10)
 		if root and player.Character == character then
-			character:PivotTo(cf + Vector3.new(0, 3, 0))
+			character.PrimaryPart = root
+			character:SetPrimaryPartCFrame(escapeCheckpoint and cf or cf + Vector3.new(0, 3, 0))
 		end
 	end
 
@@ -13189,9 +13239,31 @@ remote.OnServerEvent:Connect(function(player, action, origin, direction)
 		if targetHumanoid and targetHumanoid ~= humanoid and targetHumanoid.Health > 0 then
 			local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
 			if not targetPlayer or Config.DamagePlayers then
-				local damage = Config.Damage * (hit.Instance.Name == "Head" and Config.HeadshotMultiplier or 1)
-				targetHumanoid:TakeDamage(damage)
-				damaged = true
+				-- Only the server's raycast against the rig's actual Head can kill an armored mutant.
+				-- Scope this rule to NPCs so a character attribute cannot change PvP damage.
+				local headshotOnly = not targetPlayer and targetModel:GetAttribute("HeadshotOnly") == true
+				local isHeadshot = hit.Instance == targetModel:FindFirstChild("Head")
+				if headshotOnly and not isHeadshot then
+					tell(player, "ARMORED MUTANT - AIM FOR THE HEAD")
+				else
+					local healthBefore = targetHumanoid.Health
+					local damage = headshotOnly and healthBefore
+						or Config.Damage * (hit.Instance.Name == "Head" and Config.HeadshotMultiplier or 1)
+					local previousHitUserId = targetModel:GetAttribute("LastHitUserId")
+					-- Write attribution before TakeDamage: encounter Died listeners can read it immediately.
+					targetModel:SetAttribute("LastHitUserId", player.UserId)
+					targetModel:SetAttribute("HeadshotKilled", isHeadshot and damage >= healthBefore)
+					targetHumanoid:TakeDamage(damage)
+					damaged = targetHumanoid.Health < healthBefore
+					if not damaged then
+						targetModel:SetAttribute("LastHitUserId", previousHitUserId)
+					end
+					if targetHumanoid.Health > 0 then
+						targetModel:SetAttribute("HeadshotKilled", false)
+					elseif headshotOnly then
+						tell(player, "HEADSHOT - MUTANT DOWN")
+					end
+				end
 			end
 		end
 	end
@@ -13244,11 +13316,23 @@ local CONFIG = {
 	SlabThickness = 1,   -- ceiling of floor 1 / floor of floor 2
 	RoofThickness = 0.5,
 	StairWidth = 6,
+	StairTreads = 28,
+	WindowWidth = 4.2,
+	WindowHeight = 3.6,
+	WindowSill = 3.5,
+	TrimThickness = 0.13,
+	PanelHeight = 2.7,
+	AccentColor = Color3.fromRGB(56, 100, 101),
+	TrimColor = Color3.fromRGB(54, 65, 69),
+	WindowColor = Color3.fromRGB(108, 143, 151),
+	EmergencyColor = Color3.fromRGB(172, 55, 45),
+	FloorMaterial = Enum.Material.SmoothPlastic,
+	FloorReflectance = 0.025,
 
-	FloorColor = Color3.fromRGB(105, 110, 116),
-	WallColor = Color3.fromRGB(153, 158, 164),
-	FurnitureColor = Color3.fromRGB(78, 85, 94),
-	BeddingColor = Color3.fromRGB(193, 199, 205),
+	FloorColor = Color3.fromRGB(111, 123, 124),
+	WallColor = Color3.fromRGB(165, 171, 158),
+	FurnitureColor = Color3.fromRGB(65, 78, 80),
+	BeddingColor = Color3.fromRGB(159, 178, 164),
 }
 
 local baseplate = workspace:WaitForChild("Baseplate")
@@ -13295,6 +13379,7 @@ hospital.Name = CONFIG.Name
 hospital:SetAttribute("GeneratedHospitalLayout", true)
 hospital:SetAttribute("CorridorClearWidth", 6)
 hospital:SetAttribute("FogDistance", CONFIG.FogDistance)
+hospital:SetAttribute("ArchitectureVersion", 2)
 
 -- Keep the building on the plate, near the spawn area.
 local offsetX = math.clamp(
@@ -13322,11 +13407,20 @@ local function part(name, size, position, color, rotation)
 		* CFrame.new(position)
 		* CFrame.Angles(0, rotation or 0, 0)
 	object.Color = color or CONFIG.WallColor
-	object.Material = Enum.Material.SmoothPlastic
+	object.Material = Enum.Material.Concrete
 	object.Anchored = true
+	object.CanTouch = false
 	object.TopSurface = Enum.SurfaceType.Smooth
 	object.BottomSurface = Enum.SurfaceType.Smooth
 	object.Parent = hospital
+	return object
+end
+
+-- Small finishes are visual only, so they cannot snag the player or absorb shots.
+local function detail(name, size, position, color, material, rotation)
+	local object = part(name, size, position, color, rotation)
+	object.Material = material or Enum.Material.Metal
+	object.CanCollide, object.CanQuery, object.CanTouch = false, false, false
 	return object
 end
 
@@ -13338,6 +13432,8 @@ local function sign(name, text, position, rotation, width)
 		CONFIG.FurnitureColor,
 		rotation
 	)
+	board.CanCollide, board.CanQuery, board.CanTouch = false, false, false
+	board.Material = Enum.Material.Metal
 
 	local surface = Instance.new("SurfaceGui")
 	surface.Face = Enum.NormalId.Front
@@ -13354,6 +13450,7 @@ local function sign(name, text, position, rotation, width)
 	label.TextScaled = true
 	label.TextColor3 = Color3.fromRGB(230, 236, 241)
 	label.Parent = surface
+	return board
 end
 
 local function ceilingLight(x, z, y)
@@ -13365,6 +13462,8 @@ local function ceilingLight(x, z, y)
 	)
 	fixture.Material = Enum.Material.Neon
 	fixture.CanCollide = false
+	fixture.CanQuery = false
+	detail("LightHousing", Vector3.new(1.9, 0.18, 2.4), Vector3.new(x, (y or 9.8) + 0.16, z), CONFIG.TrimColor)
 
 	local light = Instance.new("PointLight")
 	light.Color = fixture.Color
@@ -13449,7 +13548,7 @@ doorway(2, 8, 2, 9, 2)  -- Top of the stairs to the landing.
 doorway(6, 10, 6, 9, 2) -- Upper hall to the isolation ward.
 
 ---------------------------------------------------------------- Geometry
-local function wall(x, z, dx, dz, hasDoor, level, height)
+local function wall(x, z, dx, dz, hasDoor, level, height, exterior, zone)
 	local horizontal = dz ~= 0
 	local center = Vector3.new(
 		x * S + dx * S / 2,
@@ -13457,7 +13556,7 @@ local function wall(x, z, dx, dz, hasDoor, level, height)
 		-z * S - dz * S / 2
 	)
 
-	local function section(name, length, h, along, vertical)
+	local function section(name, length, h, along, vertical, color)
 		local size = horizontal
 			and Vector3.new(length, h, T)
 			or Vector3.new(T, h, length)
@@ -13466,11 +13565,47 @@ local function wall(x, z, dx, dz, hasDoor, level, height)
 			and Vector3.new(along, vertical, 0)
 			or Vector3.new(0, vertical, along)
 
-		part(name, size, center + shift)
+		return part(name, size, center + shift, color)
+	end
+	local function finish(length, along)
+		local base = levelBase[level]
+		local function band(name, tall, y, color, thickness)
+			local size = horizontal and Vector3.new(length, tall, T + thickness)
+				or Vector3.new(T + thickness, tall, length)
+			local p = Vector3.new(center.X, y, center.Z)
+			p += horizontal and Vector3.new(along, 0, 0) or Vector3.new(0, 0, along)
+			detail(name, size, p, color, Enum.Material.SmoothPlastic)
+		end
+		band("HygienicWallPanel", CONFIG.PanelHeight, base + CONFIG.PanelHeight / 2, CONFIG.AccentColor, 0.035)
+		band("WallBumperRail", 0.14, base + CONFIG.PanelHeight, CONFIG.TrimColor, 0.13)
+		band("WallSkirting", 0.25, base + 0.125, CONFIG.TrimColor, 0.08)
+		band("CeilingCornice", 0.18, base + height - 0.09, CONFIG.TrimColor, 0.07)
 	end
 
 	if not hasDoor then
-		section("Wall", S, height, 0, 0)
+		if exterior and zone ~= "Stair" then
+			local w, h, sill = CONFIG.WindowWidth, CONFIG.WindowHeight, CONFIG.WindowSill
+			local jamb = (S - w) / 2
+			section("WindowPier", jamb, height, -(S + w) / 4, 0)
+			section("WindowPier", jamb, height, (S + w) / 4, 0)
+			section("WindowSillWall", w, sill, 0, (sill - height) / 2)
+			local top = height - sill - h
+			section("WindowHeaderWall", w, top, 0, (height - top) / 2)
+			local glass = section("HospitalWindow", w, h, 0, sill + h / 2 - height / 2, CONFIG.WindowColor)
+			glass.Size = horizontal and Vector3.new(w, h, 0.18) or Vector3.new(0.18, h, w)
+			glass.Material, glass.Transparency, glass.Reflectance = Enum.Material.Glass, 0.38, 0.08
+			local mid = levelBase[level] + sill + h / 2
+			for _, side in ipairs({-1, 1}) do
+				local framePosition = Vector3.new(center.X, mid, center.Z)
+				framePosition += horizontal and Vector3.new(side * w / 2, 0, 0) or Vector3.new(0, 0, side * w / 2)
+				detail("WindowFrame", horizontal and Vector3.new(0.15, h + 0.25, T + 0.18) or Vector3.new(T + 0.18, h + 0.25, 0.15), framePosition, CONFIG.TrimColor)
+				detail("WindowFrame", horizontal and Vector3.new(w + 0.25, 0.15, T + 0.18) or Vector3.new(T + 0.18, 0.15, w + 0.25), Vector3.new(center.X, mid + side * h / 2, center.Z), CONFIG.TrimColor)
+			end
+			detail("WindowMullion", horizontal and Vector3.new(0.1, h, 0.24) or Vector3.new(0.24, h, 0.1), Vector3.new(center.X, mid, center.Z), CONFIG.TrimColor)
+		else
+			section("Wall", S, height, 0, 0)
+		end
+		finish(S, 0)
 		return
 	end
 
@@ -13478,6 +13613,8 @@ local function wall(x, z, dx, dz, hasDoor, level, height)
 	local jambOffset = (S + CONFIG.DoorWidth) / 4
 	section("DoorJamb", jamb, height, -jambOffset, 0)
 	section("DoorJamb", jamb, height, jambOffset, 0)
+	finish(jamb, -jambOffset)
+	finish(jamb, jambOffset)
 	section(
 		"DoorLintel",
 		CONFIG.DoorWidth,
@@ -13485,6 +13622,13 @@ local function wall(x, z, dx, dz, hasDoor, level, height)
 		0,
 		CONFIG.DoorHeight / 2
 	)
+	local frameHeight = CONFIG.DoorHeight
+	for _, side in ipairs({-1, 1}) do
+		local p = Vector3.new(center.X, levelBase[level] + frameHeight / 2, center.Z)
+		p += horizontal and Vector3.new(side * (CONFIG.DoorWidth / 2 + 0.12), 0, 0) or Vector3.new(0, 0, side * (CONFIG.DoorWidth / 2 + 0.12))
+		detail("DoorCasing", horizontal and Vector3.new(0.24, frameHeight, T + 0.2) or Vector3.new(T + 0.2, frameHeight, 0.24), p, CONFIG.TrimColor)
+	end
+	detail("DoorCasingHeader", horizontal and Vector3.new(CONFIG.DoorWidth + 0.5, 0.25, T + 0.2) or Vector3.new(T + 0.2, 0.25, CONFIG.DoorWidth + 0.5), Vector3.new(center.X, levelBase[level] + frameHeight + 0.13, center.Z), CONFIG.TrimColor)
 end
 
 local directions = {
@@ -13507,6 +13651,7 @@ for id, data in pairs(cells) do
 		if not hospital.PrimaryPart then
 			hospital.PrimaryPart = tile
 		end
+		tile.Material, tile.Reflectance = CONFIG.FloorMaterial, CONFIG.FloorReflectance
 
 		-- Ceiling, unless this is the open shaft or a floor-2 slab already covers it.
 		local above = cells[key(data.x, data.z, 2)]
@@ -13517,12 +13662,13 @@ for id, data in pairs(cells) do
 		end
 	else
 		if data.zone ~= "Stair" then
-			part(
+			local tile = part(
 				data.zone .. "Floor",
 				Vector3.new(S, SLAB, S),
 				Vector3.new(cx, floor2 - SLAB / 2, cz),
 				CONFIG.FloorColor
 			)
+			tile.Material, tile.Reflectance = CONFIG.FloorMaterial, CONFIG.FloorReflectance
 
 			-- Floor-2 space with no room below: a solid block keeps it from floating.
 			if not cells[key(data.x, data.z, 1)] then
@@ -13533,6 +13679,13 @@ for id, data in pairs(cells) do
 
 		part("Roof", Vector3.new(S, ROOF, S),
 			Vector3.new(cx, floor2 + H + ROOF / 2, cz))
+	end
+	if data.zone ~= "Stair" then
+		local y = levelBase[data.level] + 0.012
+		for _, s in ipairs({-1, 1}) do
+			detail("FloorGrout", Vector3.new(S - 0.03, 0.012, 0.035), Vector3.new(cx, y, cz + s * S / 2), CONFIG.TrimColor, Enum.Material.SmoothPlastic)
+			detail("FloorGrout", Vector3.new(0.035, 0.012, S - 0.03), Vector3.new(cx + s * S / 2, y, cz), CONFIG.TrimColor, Enum.Material.SmoothPlastic)
+		end
 	end
 
 	for _, direction in ipairs(directions) do
@@ -13562,7 +13715,9 @@ for id, data in pairs(cells) do
 					dz,
 					entrance or doors[edgeKey(id, neighborId)],
 					data.level,
-					height
+					height,
+					neighbor == nil,
+					data.zone
 				)
 			end
 		end
@@ -13585,6 +13740,27 @@ do
 	ramp.TopSurface = Enum.SurfaceType.Smooth
 	ramp.BottomSurface = Enum.SurfaceType.Smooth
 	ramp.Parent = hospital
+	-- Visible stair treads sit over the original smooth collision ramp.
+	-- This preserves the climb while giving the shaft a proper staircase.
+	local rise = (rampEnd.Y - rampStart.Y) / CONFIG.StairTreads
+	local run = math.abs(rampEnd.Z - rampStart.Z) / CONFIG.StairTreads
+	for index = 1, CONFIG.StairTreads do
+		local y = rampStart.Y + rise * (index - 0.5)
+		local z = rampStart.Z - run * (index - 0.5)
+		detail("StairTread", Vector3.new(CONFIG.StairWidth, 0.08, run), Vector3.new(2 * S, y, z), CONFIG.FloorColor, Enum.Material.Metal)
+		detail("StairRiser", Vector3.new(CONFIG.StairWidth, rise, 0.06), Vector3.new(2 * S, y - rise / 2, z + run / 2), CONFIG.TrimColor)
+		detail("StairNosing", Vector3.new(CONFIG.StairWidth - 0.15, 0.035, 0.09), Vector3.new(2 * S, y + 0.06, z + run / 2 - 0.04), Color3.fromRGB(200, 169, 89))
+	end
+	for _, side in ipairs({-1, 1}) do
+		local shift = Vector3.new(side * (CONFIG.StairWidth / 2 - 0.2), 3, 0)
+		local a, b = rampStart + shift, rampEnd + shift
+		local rail = detail("StairHandrail", Vector3.new(0.14, 0.14, (b - a).Magnitude), (a + b) / 2, CONFIG.TrimColor)
+		rail.CFrame = origin * CFrame.lookAt((a + b) / 2, b)
+		for index = 0, 7 do
+			local foot = rampStart:Lerp(rampEnd, index / 7) + Vector3.new(shift.X, 0, 0)
+			detail("StairBaluster", Vector3.new(0.1, 3, 0.1), foot + Vector3.new(0, 1.5, 0), CONFIG.TrimColor)
+		end
+	end
 end
 
 -- Short entry approach, flush with the hospital floor.
@@ -13639,6 +13815,24 @@ local function bedBay(x, z, base, side)
 			Vector3.new(bx + s * 0.925, base + 2.6, z),
 			CONFIG.FurnitureColor)
 	end
+	for _, sx in ipairs({-1, 1}) do
+		for _, sz in ipairs({-1, 1}) do
+			detail("BedCaster", Vector3.new(0.28, 0.45, 0.45), Vector3.new(x + sx * 1.8, base + 0.23, z + sz * 2.8), CONFIG.TrimColor)
+		end
+		detail("BedSafetyRail", Vector3.new(0.1, 0.12, 4.1), Vector3.new(x + sx * 1.98, base + 2.35, z), Color3.fromRGB(132, 146, 143))
+		for _, dz in ipairs({-1.7, 1.7}) do
+			detail("BedRailSupport", Vector3.new(0.1, 0.8, 0.1), Vector3.new(x + sx * 1.98, base + 1.95, z + dz), CONFIG.TrimColor)
+		end
+	end
+	detail("FoldedBlanket", Vector3.new(3.6, 0.12, 0.75), Vector3.new(x, base + 2.07, z + 2.75), Color3.fromRGB(92, 125, 121), Enum.Material.Fabric)
+	local poleX, poleZ = x + side * 2.7, z - 2.4
+	detail("IVPole", Vector3.new(0.09, 5.5, 0.09), Vector3.new(poleX, base + 2.75, poleZ), Color3.fromRGB(137, 151, 151))
+	detail("IVPoleFeet", Vector3.new(1.4, 0.12, 0.12), Vector3.new(poleX, base + 0.15, poleZ), CONFIG.TrimColor)
+	detail("IVPoleFeet", Vector3.new(0.12, 0.12, 1.4), Vector3.new(poleX, base + 0.15, poleZ), CONFIG.TrimColor)
+	detail("IVHook", Vector3.new(0.9, 0.07, 0.07), Vector3.new(poleX, base + 5.45, poleZ), CONFIG.TrimColor)
+	local bag = detail("IVBag", Vector3.new(0.5, 0.9, 0.2), Vector3.new(poleX + 0.3, base + 4.8, poleZ), Color3.fromRGB(164, 193, 187), Enum.Material.Glass)
+	bag.Transparency = 0.3
+	detail("IVTube", Vector3.new(0.025, 2.7, 0.025), Vector3.new(poleX + 0.3, base + 3.05, poleZ), Color3.fromRGB(121, 149, 139), Enum.Material.SmoothPlastic)
 end
 
 -- Floor 1: maternity ward, central aisle stays clear.
@@ -13705,8 +13899,145 @@ for _, point in ipairs({
 	ceilingLight(point[1], point[2], upperY)
 end
 
+---------------------------------------------------------------- Exterior architecture
+-- The forecourt stops before the courier's driving lane (local Z = 11 onward).
+local canopyY = floor1 + CONFIG.DoorHeight + 0.8
+part("EntranceCanopy", Vector3.new(18, 0.45, 6.5), Vector3.new(7, canopyY, 6.6), CONFIG.TrimColor).Material = Enum.Material.Metal
+detail("CanopySnow", Vector3.new(18, 0.16, 6.5), Vector3.new(7, canopyY + 0.31, 6.6), Color3.fromRGB(201, 211, 209), Enum.Material.Snow)
+for _, x in ipairs({-0.5, 14.5}) do
+	part("EntranceColumn", Vector3.new(0.55, canopyY - floor1, 0.55), Vector3.new(x, floor1 + (canopyY - floor1) / 2, 8.8), CONFIG.TrimColor).Material = Enum.Material.Metal
+	part("ColumnPlinth", Vector3.new(0.95, 0.5, 0.95), Vector3.new(x, floor1 + 0.25, 8.8), CONFIG.WallColor)
+end
+local fascia = sign("HospitalIdentity", "RACCOON CITY HOSPITAL", Vector3.new(7, canopyY - 0.2, 9.92), math.pi, 13.8)
+fascia.Color = CONFIG.AccentColor
+detail("CanopyFascia", Vector3.new(18, 1.55, 0.24), Vector3.new(7, canopyY - 0.18, 9.8), CONFIG.AccentColor)
+detail("MedicalCrossVertical", Vector3.new(0.32, 1.2, 0.16), Vector3.new(-1.1, canopyY - 0.2, 9.99), Color3.fromRGB(225, 231, 217), Enum.Material.Neon)
+detail("MedicalCrossHorizontal", Vector3.new(1.2, 0.32, 0.16), Vector3.new(-1.1, canopyY - 0.2, 10), Color3.fromRGB(225, 231, 217), Enum.Material.Neon)
+sign("EntranceSubtitle", "EMERGENCY  /  RECEPTION", Vector3.new(7, 7.5, 4.08), math.pi, 5)
+ceilingLight(7, 7, canopyY - 0.35)
+for _, x in ipairs({-3.5, 3.5, 10.5, 17.5}) do
+	detail("FacadePier", Vector3.new(0.44, H + SLAB, 0.35), Vector3.new(x, floor1 + (H + SLAB) / 2, 4.05), CONFIG.TrimColor)
+end
+detail("LobbyRoofCap", Vector3.new(22, 0.26, 22), Vector3.new(7, floor1 + H + SLAB + 0.13, -7), CONFIG.TrimColor)
+for _, side in ipairs({-1, 1}) do
+	detail("LobbyParapet", Vector3.new(0.3, 0.9, 22), Vector3.new(7 + side * 10.85, 12.1, -7), CONFIG.WallColor, Enum.Material.Concrete)
+	detail("LobbyParapet", Vector3.new(22, 0.9, 0.3), Vector3.new(7, 12.1, -7 + side * 10.85), CONFIG.WallColor, Enum.Material.Concrete)
+end
+-- Upper roof edging follows the original footprint instead of covering the open shaft.
+for _, data in pairs(cells) do
+	if data.level == 2 then
+		for _, direction in ipairs(directions) do
+			local dx, dz = direction[1], direction[2]
+			if not cells[key(data.x + dx, data.z + dz, 2)] then
+				local size = dz ~= 0 and Vector3.new(S, 0.65, 0.32) or Vector3.new(0.32, 0.65, S)
+				detail("UpperRoofParapet", size, Vector3.new(data.x * S + dx * S / 2, floor2 + H + ROOF + 0.3, -data.z * S - dz * S / 2), CONFIG.TrimColor)
+			end
+		end
+	end
+end
+local function airUnit(x, roofY, z)
+	detail("AirHandlingUnit", Vector3.new(4.8, 1.8, 3.2), Vector3.new(x, roofY + 0.9, z), Color3.fromRGB(100, 112, 111))
+	for index = -3, 3 do
+		detail("VentLouvre", Vector3.new(3.8, 0.08, 0.08), Vector3.new(x, roofY + 0.9 + index * 0.19, z + 1.65), CONFIG.TrimColor)
+	end
+	detail("VentDuct", Vector3.new(1.2, 0.75, 3), Vector3.new(x + 1.2, roofY + 0.4, z - 2.8), Color3.fromRGB(113, 125, 122))
+end
+airUnit(0, 11.8, -9)
+airUnit(55, 11.5, -37)
+airUnit(47, 22, -56)
+for _, x in ipairs({-3.95, 17.95}) do
+	detail("RainwaterDownpipe", Vector3.new(0.16, 10.7, 0.16), Vector3.new(x, 5.7, -15), CONFIG.TrimColor)
+end
+for _, x in ipairs({1, 13}) do
+	local bollard = part("EntryBollard", Vector3.new(0.35, 2.6, 0.35), Vector3.new(x, 1.3, 10.4), CONFIG.TrimColor)
+	bollard.Material = Enum.Material.Metal
+	detail("BollardReflector", Vector3.new(0.38, 0.22, 0.38), Vector3.new(x, 2.0, 10.4), Color3.fromRGB(204, 177, 96), Enum.Material.Neon)
+end
+for index = 0, 4 do
+	detail("ApproachStripe", Vector3.new(5.2, 0.015, 0.3), Vector3.new(7, floor1 + 0.02, 6 + index * 0.8), Color3.fromRGB(207, 209, 178), Enum.Material.SmoothPlastic)
+end
+
+---------------------------------------------------------------- Clinical interior details
+local function monitor(x, y, z, yaw)
+	local screen = detail("ClinicalMonitor", Vector3.new(1.9, 1.25, 0.2), Vector3.new(x, y, z), Color3.fromRGB(17, 28, 29), Enum.Material.Metal, yaw)
+	local surface = Instance.new("SurfaceGui")
+	surface.Name, surface.Face, surface.LightInfluence = "MonitorDisplay", Enum.NormalId.Front, 0
+	surface.CanvasSize = Vector2.new(190, 125)
+	surface.Parent = screen
+	local heading = Instance.new("TextLabel")
+	heading.Size = UDim2.fromScale(1, 0.25)
+	heading.BackgroundTransparency = 1
+	heading.Font, heading.TextSize = Enum.Font.Code, 12
+	heading.Text, heading.TextColor3 = "PATIENT MONITOR", Color3.fromRGB(130, 176, 162)
+	heading.Parent = surface
+	local points = {Vector2.new(8,72),Vector2.new(49,72),Vector2.new(60,64),Vector2.new(68,84),Vector2.new(77,43),Vector2.new(86,90),Vector2.new(95,72),Vector2.new(141,72),Vector2.new(155,64),Vector2.new(163,72),Vector2.new(182,72)}
+	for index = 1, #points - 1 do
+		local a, b = points[index], points[index + 1]
+		local delta = b - a
+		local line = Instance.new("Frame")
+		line.AnchorPoint = Vector2.new(0.5, 0.5)
+		line.Position = UDim2.fromOffset((a.X + b.X) / 2, (a.Y + b.Y) / 2)
+		line.Size, line.Rotation = UDim2.fromOffset(delta.Magnitude, 2), math.deg(math.atan2(delta.Y, delta.X))
+		line.BackgroundColor3, line.BorderSizePixel = Color3.fromRGB(107, 194, 153), 0
+		line.Parent = surface
+	end
+	return screen
+end
+-- Keep the desktop pickup at (12.2, -9.6) unobscured.
+monitor(14.7, 4.25, -10.6, math.pi)
+detail("ReceptionKeyboard", Vector3.new(1.6, 0.07, 0.65), Vector3.new(14.6, 3.54, -9.7), CONFIG.TrimColor, Enum.Material.SmoothPlastic)
+sign("ReceptionDeskLabel", "RECEPTION", Vector3.new(13, 2.3, -8.7), math.pi, 4.5)
+detail("ReceptionToeKick", Vector3.new(4.9, 0.25, 0.08), Vector3.new(13, 0.85, -8.73), CONFIG.TrimColor)
+-- Keycard is at the east end of this counter; equipment stays at the west end.
+monitor(26.7, 4.3, -50.2, math.pi)
+sign("NurseDeskLabel", "NURSES' STATION", Vector3.new(28, 2.25, -49.22), math.pi, 4.5)
+for _, z in ipairs({-3, -11}) do
+	-- The first-aid pickup remains on the centre of the first bench.
+	detail("WaitingBackrest", Vector3.new(0.3, 1.5, 4.8), Vector3.new(-1.3, 2.2, z), CONFIG.AccentColor, Enum.Material.Fabric)
+	for _, endZ in ipairs({-2.25, 2.25}) do
+		detail("BenchArmrest", Vector3.new(2.7, 0.12, 0.12), Vector3.new(0, 2.5, z + endZ), CONFIG.TrimColor)
+	end
+end
+sign("LobbyDirectory", "01  RECEPTION / MATERNITY\n02  ISOLATION / SPECIMENS", Vector3.new(16.91, 6, -5), math.pi / 2, 6)
+sign("StaffNotice", "STAFF ACCESS ONLY\nKEYCARD REQUIRED", Vector3.new(19.9, 5.7, -30.92), math.pi, 3.8)
+sign("IsolationWarning", "ISOLATION  /  BIOHAZARD", Vector3.new(42, floor2 + 7.4, -66.9), 0, 5)
+sign("UpperLevelNumber", "02  /  CLINICAL WING", Vector3.new(14, floor2 + 7.2, -65.91), math.pi, 5)
+sign("LobbyExitSign", "EXIT", Vector3.new(7, 8.7, 2.91), 0, 3)
+
+for _, bed in ipairs({
+	{38.5, -35.7, floor1, "A-01"}, {52.5, -35.7, floor1, "A-02"},
+	{38.5, -48.3, floor1, "A-03"}, {52.5, -48.3, floor1, "A-04"},
+	{34.5, -57, floor2, "I-01"}, {49.5, -57, floor2, "I-02"},
+}) do
+	monitor(bed[1], bed[3] + 3.4, bed[2] - 3.55, math.pi)
+	sign("BedNumber", bed[4], Vector3.new(bed[1], bed[3] + 1.1, bed[2] + 3.53), math.pi, 1.4)
+end
+for _, z in ipairs({-35.7, -48.3}) do
+	detail("PrivacyTrack", Vector3.new(0.1, 0.1, 6.1), Vector3.new(45.5, 9.9, z), CONFIG.TrimColor)
+	-- Partly drawn curtains divide beds but leave the six-stud central ward aisle open.
+	for index = 0, 5 do
+		detail("PrivacyCurtain", Vector3.new(0.11, 5.6, 0.4), Vector3.new(45.5 + (index % 2) * 0.08, 6.7, z - 1.8 + index * 0.36), Color3.fromRGB(116, 145, 137), Enum.Material.Fabric)
+	end
+end
+for _, level in ipairs({{0.5, 56.5, -51.7}, {11.5, 33.1, -48.4}}) do
+	local y, x, z = level[1], level[2], level[3]
+	detail("MedicalCabinet", Vector3.new(2.2, 5.8, 0.9), Vector3.new(x, y + 2.9, z), CONFIG.AccentColor, Enum.Material.Metal)
+	for _, side in ipairs({-1, 1}) do
+		detail("CabinetDoor", Vector3.new(1.05, 5.3, 0.09), Vector3.new(x + side * 0.55, y + 2.95, z + 0.51), CONFIG.WallColor)
+		detail("CabinetHandle", Vector3.new(0.07, 0.6, 0.12), Vector3.new(x + side * 0.14, y + 3.05, z + 0.61), CONFIG.TrimColor)
+	end
+end
+-- Recessed floor lines mark turns without changing the collision surface.
+for _, route in ipairs({
+	{Vector3.new(0.14, 0.012, 13), Vector3.new(9.5, floor1 + 0.022, -20)},
+	{Vector3.new(16, 0.012, 0.14), Vector3.new(19, floor1 + 0.022, -26)},
+	{Vector3.new(0.14, 0.012, 18), Vector3.new(26, floor1 + 0.022, -39)},
+	{Vector3.new(12, 0.012, 0.14), Vector3.new(20, floor2 + 0.022, -61)},
+}) do
+	detail("WardRouteStripe", route[1], route[2], Color3.fromRGB(139, 175, 166), Enum.Material.SmoothPlastic)
+end
 hospital.Parent = workspace
-print("Built two-floor hospital greybox with 6-stud corridors and 40-stud fog.")
+print("Built enhanced two-floor hospital: framed windows, entrance canopy, stairs, clinical wards, and preserved mission route.")
 ]]></ProtectedString>
 				<bool name="Disabled">false</bool>
 				<Content name="LinkedSource"><null></null></Content>
@@ -13905,6 +14236,7 @@ sign(world.GateSign, "EXIT GATE\nKEY IN VAN")
 
 -- Keys are personal and survive a respawn. Keep the prop for other players.
 local function collectKey(player)
+	if (player:GetAttribute("EscapeStage") or 0) < 3 then return end
 	local character, _, root = aliveNear(player, key.Position)
 	if not character then return end
 	local localPosition = root.Position - origin
@@ -13920,6 +14252,7 @@ keyPrompt.Triggered:Connect(collectKey)
 
 local opening = false
 local function unlockGate(player)
+	if (player:GetAttribute("EscapeStage") or 0) < 3 then return end
 	if opening or world:GetAttribute("GateOpen") then return end
 	if not aliveNear(player, gateAttachment.WorldPosition) then return end
 	if not player:GetAttribute("ForestGateKey") then
@@ -13985,7 +14318,7 @@ RunService.Heartbeat:Connect(function(dt)
 		local character = player.Character
 		local root = character and character:FindFirstChild("HumanoidRootPart")
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-		if root and humanoid and humanoid.Health > 0 then
+		if root and humanoid and humanoid.Health > 0 and (player:GetAttribute("EscapeStage") or 0) >= 3 then
 			local current = root.Position - ambushCenter
 			local last = previous[character] or current
 			previous[character] = current
@@ -14023,6 +14356,1118 @@ end)
 				<int64 name="SourceAssetId">-1</int64>
 				<SharedString name="Tags">yuZpQdnvvUBOTYh1jqZ2cA==</SharedString>
 				<UniqueId name="UniqueId">5c441ba17dcde3450ad6e6700000112c</UniqueId>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX9154AEEB05AE45B2AF7B9D90AACA6B0F">
+			<Properties>
+				<Content name="LinkedSource"><null></null></Content>
+				<ProtectedString name="Source"><![CDATA[-- Authored continuation environment. Safe to require in Studio and on the server.
+-- originCf is the centre of the fence entrance; local +Z leads toward the house.
+local CONFIG = {
+	Name = "EscapeHouse",
+	Version = 1,
+	HouseWidth = 30,
+	HouseDepth = 32,
+	HouseFront = 19,
+	HouseBack = 51,
+	FloorTop = 0.95,
+	FloorThickness = 0.6,
+	WallHeight = 10,
+	WallThickness = 0.65,
+	EntranceWidth = 6,
+	DoorHeight = 8,
+	BedroomFront = 38,
+	BedroomDoorWidth = 7,
+	FenceHalfWidth = 24,
+	FenceDepth = 62,
+	FenceHeight = 9,
+	FencePostSpacing = 8,
+	FenceWireSpacing = 1.3,
+	FenceGateWidth = 8,
+	FencePostSize = 0.35,
+	FenceWireSize = 0.09,
+	RoofHalfSpan = 17,
+	RoofRise = 4.4,
+	RoofThickness = 0.45,
+	RoofOverhang = 2,
+	WindowSize = Vector3.new(5, 3.5, 0.16),
+	WindowCentreHeight = 6.2,
+	WindowTrimSize = 0.16,
+	ElectricThresholdSize = Vector3.new(8, 8, 3),
+	InteriorTriggerSize = Vector3.new(26, 8, 22),
+	MarkerSize = Vector3.new(1, 1, 1),
+	AmmoCrateSize = Vector3.new(3.4, 2.6, 2.8),
+	MattressSize = Vector3.new(6, 0.8, 9),
+	Palette = {
+		Snow = Color3.fromRGB(200, 214, 218),
+		Wood = Color3.fromRGB(65, 75, 70),
+		WoodLight = Color3.fromRGB(92, 101, 91),
+		WoodDark = Color3.fromRGB(42, 48, 44),
+		Floor = Color3.fromRGB(82, 72, 59),
+		Metal = Color3.fromRGB(69, 81, 87),
+		Roof = Color3.fromRGB(41, 57, 61),
+		Glass = Color3.fromRGB(121, 157, 164),
+		Electric = Color3.fromRGB(81, 197, 255),
+		Warning = Color3.fromRGB(231, 173, 51),
+		Ink = Color3.fromRGB(27, 35, 37),
+		Text = Color3.fromRGB(225, 229, 213),
+		Bedding = Color3.fromRGB(113, 119, 99),
+		Ammo = Color3.fromRGB(77, 91, 57),
+		Warm = Color3.fromRGB(255, 203, 131),
+	},
+}
+
+local function Build(originCf)
+	local previous = workspace:FindFirstChild(CONFIG.Name)
+	if previous then
+		assert(previous:IsA("Model") and previous:GetAttribute("GeneratedEscapeHouse"),
+			"EscapeHouse name is already used by an unrelated instance")
+		return previous
+	end
+	assert(typeof(originCf) == "CFrame", "EscapeHouseBuilder.Build requires a CFrame")
+	local house = Instance.new("Model")
+	house.Name = CONFIG.Name
+	house:SetAttribute("GeneratedEscapeHouse", true)
+	house:SetAttribute("LayoutVersion", CONFIG.Version)
+	house:SetAttribute("Origin", originCf)
+	house:SetAttribute("HeadshotsRequired", true)
+	local C = CONFIG.Palette
+	local wallTop = CONFIG.FloorTop + CONFIG.WallHeight
+	local wallCentre = CONFIG.FloorTop + CONFIG.WallHeight / 2
+	local centreZ = (CONFIG.HouseFront + CONFIG.HouseBack) / 2
+
+	local function part(name, size, position, color, material, rotation, collide)
+		local item = Instance.new("Part")
+		item.Name = name
+		item.Size = size
+		item.CFrame = originCf * CFrame.new(position) * (rotation or CFrame.identity)
+		item.Anchored = true
+		item.Color = color or C.Wood
+		item.Material = material or Enum.Material.WoodPlanks
+		item.TopSurface = Enum.SurfaceType.Smooth
+		item.BottomSurface = Enum.SurfaceType.Smooth
+		item.CanCollide = collide ~= false
+		item.CanTouch = false
+		item.CanQuery = collide ~= false
+		item.Parent = house
+		return item
+	end
+
+	local function marker(name, position, size, rotation)
+		local item = part(name, size or CONFIG.MarkerSize, position, C.Electric,
+			Enum.Material.SmoothPlastic, rotation, false)
+		item.Transparency = 1
+		return item
+	end
+
+	local function sign(name, text, size, position, color, rotation, textColor)
+		local board = part(name, size, position, color or C.Ink,
+			Enum.Material.Metal, rotation, false)
+		local gui = Instance.new("SurfaceGui")
+		gui.Name = "Lettering"
+		gui.Face = Enum.NormalId.Front
+		gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		gui.PixelsPerStud = 42
+		gui.LightInfluence = 0.15
+		gui.Parent = board
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.fromScale(0.92, 0.84)
+		label.Position = UDim2.fromScale(0.04, 0.08)
+		label.BackgroundTransparency = 1
+		label.Text = text
+		label.TextColor3 = textColor or C.Text
+		label.Font = Enum.Font.GothamBold
+		label.TextScaled = true
+		label.TextWrapped = true
+		label.Parent = gui
+		return board
+	end
+
+	local function lamp(name, position, color, brightness, range)
+		local bulb = part(name, Vector3.new(0.45, 0.3, 0.45), position,
+			color, Enum.Material.Neon, nil, false)
+		local light = Instance.new("PointLight")
+		light.Name = "Light"
+		light.Color = color
+		light.Brightness = brightness
+		light.Range = range
+		light.Shadows = false
+		light.Parent = bulb
+		return bulb
+	end
+
+	-- A shallow snowy pad covers the extension beyond the old forest map.
+	part("SnowYard", Vector3.new(52, 1, 66), Vector3.new(0, -0.5, 31), C.Snow, Enum.Material.Snow)
+	part("ApproachPath", Vector3.new(8, 0.08, 18), Vector3.new(0, 0.045, 8), C.Metal, Enum.Material.Slate)
+	part("Foundation", Vector3.new(31, 0.65, 33), Vector3.new(0, 0.25, centreZ), C.Metal, Enum.Material.Concrete)
+	part("CabinFloor", Vector3.new(CONFIG.HouseWidth, CONFIG.FloorThickness, CONFIG.HouseDepth),
+		Vector3.new(0, CONFIG.FloorTop - CONFIG.FloorThickness / 2, centreZ), C.Floor)
+	part("PorchStep", Vector3.new(9, 0.3, 2), Vector3.new(0, 0.15, 14), C.WoodDark)
+	part("Porch", Vector3.new(13, 0.6, 4), Vector3.new(0, 0.55, 17), C.WoodLight)
+	for _, x in ipairs({-6, 6}) do
+		part("PorchPost", Vector3.new(0.4, 9.7, 0.4), Vector3.new(x, 5.65, 15.4), C.WoodDark)
+	end
+	part("PorchAwning", Vector3.new(14, 0.35, 5), Vector3.new(0, 10.25, 16.4),
+		C.Roof, Enum.Material.Metal, CFrame.Angles(math.rad(-5), 0, 0))
+	part("PorchSnow", Vector3.new(14, 0.16, 5), Vector3.new(0, 10.48, 16.4),
+		C.Snow, Enum.Material.Snow, CFrame.Angles(math.rad(-5), 0, 0), false)
+
+	-- Window openings are real gaps in the walls, filled with thin glass.
+	local function windowWall(name, centreX, z, width)
+		local winW, winH = CONFIG.WindowSize.X, CONFIG.WindowSize.Y
+		local lowerTop = CONFIG.WindowCentreHeight - winH / 2
+		local upperBottom = CONFIG.WindowCentreHeight + winH / 2
+		part(name .. "Lower", Vector3.new(width, lowerTop - CONFIG.FloorTop, CONFIG.WallThickness),
+			Vector3.new(centreX, (lowerTop + CONFIG.FloorTop) / 2, z), C.Wood)
+		part(name .. "Upper", Vector3.new(width, wallTop - upperBottom, CONFIG.WallThickness),
+			Vector3.new(centreX, (upperBottom + wallTop) / 2, z), C.Wood)
+		local sideWidth = (width - winW) / 2
+		for _, direction in ipairs({-1, 1}) do
+			part(name .. "Side", Vector3.new(sideWidth, winH, CONFIG.WallThickness),
+				Vector3.new(centreX + direction * (winW + sideWidth) / 2, CONFIG.WindowCentreHeight, z), C.Wood)
+			part(name .. "VerticalTrim", Vector3.new(CONFIG.WindowTrimSize, winH + 0.3, 0.8),
+				Vector3.new(centreX + direction * winW / 2, CONFIG.WindowCentreHeight, z), C.WoodDark)
+			part(name .. "HorizontalTrim", Vector3.new(winW + 0.3, CONFIG.WindowTrimSize, 0.8),
+				Vector3.new(centreX, CONFIG.WindowCentreHeight + direction * winH / 2, z), C.WoodDark)
+		end
+		local glass = part(name .. "Glass", CONFIG.WindowSize,
+			Vector3.new(centreX, CONFIG.WindowCentreHeight, z), C.Glass, Enum.Material.Glass)
+		glass.Transparency = 0.55
+		part(name .. "Mullion", Vector3.new(0.12, winH, 0.2),
+			Vector3.new(centreX, CONFIG.WindowCentreHeight, z - 0.13), C.WoodDark)
+	end
+	local frontWingWidth = (CONFIG.HouseWidth - CONFIG.EntranceWidth) / 2
+	for _, direction in ipairs({-1, 1}) do
+		windowWall("FrontWindow", direction * (CONFIG.EntranceWidth + frontWingWidth) / 2,
+			CONFIG.HouseFront, frontWingWidth)
+		part("SideWall", Vector3.new(CONFIG.WallThickness, CONFIG.WallHeight, CONFIG.HouseDepth),
+			Vector3.new(direction * CONFIG.HouseWidth / 2, wallCentre, centreZ), C.Wood)
+		part("CornerPost", Vector3.new(0.8, CONFIG.WallHeight + 0.2, 0.8),
+			Vector3.new(direction * CONFIG.HouseWidth / 2, wallCentre, CONFIG.HouseFront), C.WoodDark)
+		part("CornerPost", Vector3.new(0.8, CONFIG.WallHeight + 0.2, 0.8),
+			Vector3.new(direction * CONFIG.HouseWidth / 2, wallCentre, CONFIG.HouseBack), C.WoodDark)
+	end
+	part("EntranceLintel", Vector3.new(CONFIG.EntranceWidth, CONFIG.WallHeight - CONFIG.DoorHeight, CONFIG.WallThickness),
+		Vector3.new(0, CONFIG.FloorTop + CONFIG.DoorHeight + (CONFIG.WallHeight - CONFIG.DoorHeight) / 2, CONFIG.HouseFront), C.WoodDark)
+	windowWall("BedroomWindow", 0, CONFIG.HouseBack, CONFIG.HouseWidth)
+	-- The old door is held flat against the inside wall, leaving a six-stud passage.
+	part("OpenFrontDoor", Vector3.new(0.22, 7.7, 4), Vector3.new(3.25, 4.8, 21.2), C.WoodDark)
+	sign("StationSign", "NORTH RIDGE\nRANGER STATION 04", Vector3.new(11, 1.7, 0.16),
+		Vector3.new(0, 9.75, 18.53), C.Ink)
+	lamp("PorchLamp", Vector3.new(0, 8.65, 18.4), C.Warm, 1.6, 15)
+
+	local bedroomWing = (CONFIG.HouseWidth - CONFIG.BedroomDoorWidth) / 2
+	for _, direction in ipairs({-1, 1}) do
+		part("BedroomPartition", Vector3.new(bedroomWing, CONFIG.WallHeight, CONFIG.WallThickness),
+			Vector3.new(direction * (CONFIG.BedroomDoorWidth + bedroomWing) / 2, wallCentre, CONFIG.BedroomFront), C.WoodLight)
+	end
+	part("BedroomLintel", Vector3.new(CONFIG.BedroomDoorWidth, 2, CONFIG.WallThickness),
+		Vector3.new(0, wallTop - 1, CONFIG.BedroomFront), C.WoodDark)
+	sign("BedroomSign", "REST QUARTERS", Vector3.new(6, 0.75, 0.1),
+		Vector3.new(0, 9.2, CONFIG.BedroomFront - 0.4), C.WoodDark)
+
+	local roofAngle = math.atan(CONFIG.RoofRise / CONFIG.RoofHalfSpan)
+	local roofSlope = math.sqrt(CONFIG.RoofHalfSpan ^ 2 + CONFIG.RoofRise ^ 2)
+	for _, direction in ipairs({-1, 1}) do
+		local tilt = CFrame.Angles(0, 0, -direction * roofAngle)
+		local centre = Vector3.new(direction * CONFIG.RoofHalfSpan / 2, wallTop + CONFIG.RoofRise / 2, centreZ)
+		part("SlopedRoof", Vector3.new(roofSlope + 0.2, CONFIG.RoofThickness, CONFIG.HouseDepth + CONFIG.RoofOverhang * 2),
+			centre, C.Roof, Enum.Material.Metal, tilt)
+		part("RoofSnow", Vector3.new(roofSlope + 0.2, 0.15, CONFIG.HouseDepth + CONFIG.RoofOverhang * 2),
+			centre + Vector3.new(0, 0.29, 0), C.Snow, Enum.Material.Snow, tilt, false)
+	end
+	-- Stepped timber gables sit entirely beneath the pitched roof.
+	local gableCourse = 0.5
+	for y = gableCourse / 2, CONFIG.RoofRise - gableCourse / 2, gableCourse do
+		local width = math.min(CONFIG.HouseWidth, 2 * CONFIG.RoofHalfSpan * (1 - (y + gableCourse / 2) / CONFIG.RoofRise))
+		if width > 0 then
+			for _, z in ipairs({CONFIG.HouseFront, CONFIG.HouseBack}) do
+				part("GableTimber", Vector3.new(width, gableCourse, CONFIG.WallThickness),
+					Vector3.new(0, wallTop + y, z), C.Wood)
+			end
+		end
+	end
+	part("RoofRidge", Vector3.new(0.5, 0.3, CONFIG.HouseDepth + CONFIG.RoofOverhang * 2),
+		Vector3.new(0, wallTop + CONFIG.RoofRise + 0.18, centreZ), C.Metal, Enum.Material.Metal)
+	part("Chimney", Vector3.new(2, 5, 2), Vector3.new(-10, 14, 46), C.Metal, Enum.Material.Brick)
+	part("ChimneyCap", Vector3.new(2.5, 0.3, 2.5), Vector3.new(-10, 16.6, 46), C.Ink, Enum.Material.Metal)
+
+	-- Supply table and obvious ammunition pickup, away from the navigation aisle.
+	part("SupplyTable", Vector3.new(7, 0.3, 4), Vector3.new(-9, 1.55, 26), C.WoodDark)
+	for _, x in ipairs({-11.8, -6.2}) do
+		part("SupplyTableLeg", Vector3.new(0.35, 0.6, 3), Vector3.new(x, 1.2, 26), C.Metal, Enum.Material.Metal)
+	end
+	local ammo = part("AmmoCrate", CONFIG.AmmoCrateSize, Vector3.new(-9, 3, 26), C.Ammo, Enum.Material.Metal)
+	ammo:SetAttribute("AmmoRefill", true)
+	part("AmmoLid", Vector3.new(3.6, 0.18, 3), Vector3.new(-9, 4.4, 26), C.Ammo, Enum.Material.Metal)
+	sign("AmmoLabel", "AMMUNITION", Vector3.new(3.2, 0.65, 0.08), Vector3.new(-9, 3.05, 24.54), C.Ink, nil, C.Warning)
+	lamp("AmmoIndicator", Vector3.new(-9, 4.6, 26), C.Warm, 1, 9)
+	sign("SupplyNotice", "EMERGENCY SUPPLIES\nAIM FOR THE HEAD", Vector3.new(8, 2, 0.1),
+		Vector3.new(-9, 6.7, 37.6), C.Ink, nil, C.Warning)
+	part("Bench", Vector3.new(2.5, 0.45, 7), Vector3.new(12, 2, 28), C.WoodDark)
+	for _, z in ipairs({25.5, 30.5}) do
+		part("BenchLeg", Vector3.new(2, 1, 0.35), Vector3.new(12, 1.4, z), C.Metal, Enum.Material.Metal)
+	end
+	part("Rug", Vector3.new(8, 0.06, 10), Vector3.new(0, CONFIG.FloorTop + 0.035, 29),
+		Color3.fromRGB(70, 71, 62), Enum.Material.Fabric, nil, false)
+	part("ShelfFrame", Vector3.new(5, 6, 1.1), Vector3.new(-11, 3.95, 35), C.WoodDark)
+	for _, y in ipairs({2, 3.6, 5.2}) do
+		part("ShelfLip", Vector3.new(5.4, 0.18, 1.6), Vector3.new(-11, y, 34.5), C.WoodLight)
+		for _, x in ipairs({-12.4, -10.8, -9.2}) do
+			part("SupplyTin", Vector3.new(0.55, 0.8, 0.6), Vector3.new(x, y + 0.48, 34.3), C.Metal, Enum.Material.Metal, nil, false)
+		end
+	end
+	lamp("FrontRoomLamp", Vector3.new(0, 10.4, 28), C.Warm, 1.7, 25)
+	lamp("BedroomLamp", Vector3.new(-2, 10.4, 45), Color3.fromRGB(173, 192, 188), 1, 21)
+
+	-- The sleeper's head points toward the rear wall (+Z).
+	part("BedFrame", Vector3.new(6.3, 0.5, 9.3), Vector3.new(8, 1.5, 43), C.WoodDark)
+	part("Bed", CONFIG.MattressSize, Vector3.new(8, 2, 43), C.Bedding, Enum.Material.Fabric)
+	part("BedHeadboard", Vector3.new(6.5, 3.3, 0.35), Vector3.new(8, 2.6, 47.6), C.WoodDark)
+	part("Pillow", Vector3.new(3.8, 0.45, 1.5), Vector3.new(8, 2.62, 46.2),
+		Color3.fromRGB(164, 162, 136), Enum.Material.Fabric, nil, false)
+	for _, x in ipairs({5.5, 10.5}) do
+		for _, z in ipairs({39.2, 46.8}) do
+			part("BedLeg", Vector3.new(0.4, 0.4, 0.4), Vector3.new(x, 1.15, z), C.Metal, Enum.Material.Metal)
+		end
+	end
+	part("BedsideCabinet", Vector3.new(2, 2.2, 2.5), Vector3.new(12.5, 2.05, 46), C.WoodLight)
+	part("Wardrobe", Vector3.new(3.5, 6, 2), Vector3.new(-11.5, 3.95, 49), C.WoodDark)
+	sign("QuarantineNote", "DO NOT WAKE\nTHE PATIENT", Vector3.new(4, 1.4, 0.1),
+		Vector3.new(8, 5.5, 50.55), C.Ink, nil, C.Warning)
+
+	-- Fence collisions close the perimeter; the energized entrance remains passable.
+	local fenceWire = CONFIG.FenceWireSize
+	local function fencePost(x, z)
+		part("FencePost", Vector3.new(CONFIG.FencePostSize, CONFIG.FenceHeight, CONFIG.FencePostSize),
+			Vector3.new(x, CONFIG.FenceHeight / 2, z), C.Metal, Enum.Material.Metal)
+		part("Insulator", Vector3.new(0.48, 0.2, 0.48), Vector3.new(x, CONFIG.FenceHeight - 0.7, z),
+			C.Electric, Enum.Material.Neon, nil, false)
+	end
+	local function fencePanel(name, from, to)
+		local delta = to - from
+		local length = delta.Magnitude
+		local alongX = math.abs(delta.X) > math.abs(delta.Z)
+		local middle = (from + to) / 2
+		local barrierSize = alongX and Vector3.new(length, CONFIG.FenceHeight, 0.12)
+			or Vector3.new(0.12, CONFIG.FenceHeight, length)
+		local barrier = part(name .. "Barrier", barrierSize,
+			Vector3.new(middle.X, CONFIG.FenceHeight / 2, middle.Z), C.Metal, Enum.Material.Metal)
+		barrier.Transparency = 1
+		-- Invisible character collision must not stop bullets through the wire grid.
+		barrier.CanQuery = false
+		local wireSize = alongX and Vector3.new(length, fenceWire, fenceWire)
+			or Vector3.new(fenceWire, fenceWire, length)
+		for y = 0.7, CONFIG.FenceHeight - 0.2, CONFIG.FenceWireSpacing do
+			part(name .. "Wire", wireSize, Vector3.new(middle.X, y, middle.Z), C.Metal, Enum.Material.Metal, nil, false)
+		end
+		local crossCount = math.floor(length / CONFIG.FenceWireSpacing)
+		for index = 1, crossCount do
+			local pos = from:Lerp(to, index / (crossCount + 1))
+			part(name .. "CrossWire", Vector3.new(fenceWire, CONFIG.FenceHeight - 0.6, fenceWire),
+				Vector3.new(pos.X, CONFIG.FenceHeight / 2, pos.Z), C.Metal, Enum.Material.Metal, nil, false)
+		end
+	end
+	for _, x in ipairs({-CONFIG.FenceHalfWidth, CONFIG.FenceHalfWidth}) do
+		for z = 0, CONFIG.FenceDepth, CONFIG.FencePostSpacing do fencePost(x, z) end
+		fencePost(x, CONFIG.FenceDepth)
+		fencePanel("SideFence", Vector3.new(x, 0, 0), Vector3.new(x, 0, CONFIG.FenceDepth))
+	end
+	for x = -CONFIG.FenceHalfWidth + CONFIG.FencePostSpacing, CONFIG.FenceHalfWidth - CONFIG.FencePostSpacing, CONFIG.FencePostSpacing do
+		fencePost(x, CONFIG.FenceDepth)
+		if math.abs(x) > CONFIG.FenceGateWidth / 2 then fencePost(x, 0) end
+	end
+	for _, x in ipairs({-CONFIG.FenceGateWidth / 2, CONFIG.FenceGateWidth / 2}) do fencePost(x, 0) end
+	fencePanel("BackFence", Vector3.new(-CONFIG.FenceHalfWidth, 0, CONFIG.FenceDepth), Vector3.new(CONFIG.FenceHalfWidth, 0, CONFIG.FenceDepth))
+	fencePanel("FrontFence", Vector3.new(-CONFIG.FenceHalfWidth, 0, 0), Vector3.new(-CONFIG.FenceGateWidth / 2, 0, 0))
+	fencePanel("FrontFence", Vector3.new(CONFIG.FenceGateWidth / 2, 0, 0), Vector3.new(CONFIG.FenceHalfWidth, 0, 0))
+	for _, y in ipairs({1.2, 2.8, 4.4, 6, 7.6}) do
+		part("LiveEntranceWire", Vector3.new(CONFIG.FenceGateWidth, 0.065, 0.065),
+			Vector3.new(0, y, 0), C.Electric, Enum.Material.Neon, nil, false)
+	end
+	for _, x in ipairs({-4, 4}) do lamp("FenceWarningLamp", Vector3.new(x, 9.2, 0), C.Electric, 1.6, 11) end
+	sign("ElectricWarning", "DANGER\nELECTRIC FENCE", Vector3.new(5.8, 2.4, 0.16), Vector3.new(-8, 6.3, -0.25), C.Warning, nil, C.Ink)
+	sign("ShelterDirection", "SHELTER / SUPPLIES\nKEEP MOVING", Vector3.new(5.8, 2.4, 0.16), Vector3.new(8, 6.3, -0.25), C.Ink)
+	part("PowerBox", Vector3.new(1.5, 2.5, 0.7), Vector3.new(-4.7, 3, -0.3), C.Metal, Enum.Material.Metal)
+	lamp("PowerIndicator", Vector3.new(-4.7, 3.5, -0.72), C.Electric, 0.6, 5)
+
+	marker("ElectricThreshold", Vector3.new(0, 4, 0), CONFIG.ElectricThresholdSize)
+	marker("YardCheckpoint", Vector3.new(0, 3, 10))
+	marker("InteriorTrigger", Vector3.new(0, 4, 31), CONFIG.InteriorTriggerSize)
+	marker("AttackerSpawn", Vector3.new(-7, 3, 45))
+	marker("SleeperSpawn", Vector3.new(8, 3.35, 43), nil, CFrame.Angles(math.pi / 2, 0, 0))
+	house.Parent = workspace
+	return house
+end
+
+return { Build = Build, Config = CONFIG }
+]]></ProtectedString>
+				<string name="ScriptGuid">{B524DC42-E365-436D-97AD-4A18D8B71755}</string>
+				<BinaryString name="AttributesSerialize"></BinaryString>
+				<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+				<bool name="DefinesCapabilities">false</bool>
+				<UniqueId name="HistoryId">00000000000000000000000000000000</UniqueId>
+				<string name="Name">EscapeHouseBuilder</string>
+				<int64 name="SourceAssetId">-1</int64>
+				<SharedString name="Tags">yuZpQdnvvUBOTYh1jqZ2cA==</SharedString>
+				<UniqueId name="UniqueId">26e019f2b3ef90d70ad7e215000003da</UniqueId>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX654C714899B94D0CBC5F44A1EE189C0B">
+			<Properties>
+				<Content name="LinkedSource"><null></null></Content>
+				<ProtectedString name="Source"><![CDATA[-- Server-controlled courier van. The VehicleSeat supplies Roblox's standard
+-- keyboard, touch and gamepad controls; a bounded road keeps the story route safe.
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local Vehicle = {}
+local DEFAULTS = {
+	RoadCenterX = 97,
+	RoadStartZ = 41,
+	StopZ = 124,
+	GroundY = 0,
+	RoadHalfWidth = 8,
+	ForwardSpeed = 24,
+	ReverseSpeed = 10,
+	Acceleration = 14,
+	Braking = 24,
+	SteeringRate = math.rad(40),
+	MaxHeading = math.rad(18),
+	VehicleHalfLength = 6.1,
+	VehicleHalfWidth = 2.9,
+	PromptDistance = 10,
+	InputTimeout = 0.6,
+}
+
+local function approach(value, target, amount)
+	return value < target and math.min(value + amount, target) or math.max(value - amount, target)
+end
+
+function Vehicle.Attach(van, config)
+	assert(van and van:IsA("Model"), "CourierVehicle.Attach requires the CourierVan model")
+	assert(not van:GetAttribute("DrivableCourier"), "CourierVehicle is already attached")
+	local settings = table.clone(DEFAULTS)
+	for key, value in pairs(config or {}) do settings[key] = value end
+	local body = van:FindFirstChild("Body")
+	assert(body and body:IsA("BasePart"), "CourierVan.Body is missing")
+	local originalFrame = body.CFrame * CFrame.new(1.4, -3.1, 0)
+	van.PrimaryPart = body
+	van:SetAttribute("DrivableCourier", true)
+	van:SetAttribute("ArrivedAtTunnel", false)
+	van:SetAttribute("Speed", 0)
+
+	local function makePart(name, size, offset, color)
+		local part = Instance.new("Part")
+		part.Name = name
+		part.Size = size
+		part.CFrame = originalFrame * offset
+		part.Color = color or Color3.fromRGB(52, 66, 92)
+		part.Material = Enum.Material.Metal
+		part.Anchored = true
+		part.CanTouch = false
+		part.TopSurface = Enum.SurfaceType.Smooth
+		part.BottomSurface = Enum.SurfaceType.Smooth
+		part.Parent = van
+		return part
+	end
+
+	-- The original delivery prop has a solid cab. Open an actual space to sit in.
+	local cab = van:FindFirstChild("Cab")
+	if cab then
+		cab.Transparency = 1
+		cab.CanCollide = false
+		cab.CanQuery = false
+	end
+	makePart("CabRoof", Vector3.new(3.6, 0.25, 5.3), CFrame.new(4, 5.15, 0))
+	makePart("CabFloor", Vector3.new(3.6, 0.25, 5.2), CFrame.new(4, 0.95, 0))
+	makePart("Dashboard", Vector3.new(0.7, 0.6, 4.7), CFrame.new(5.15, 2.0, 0), Color3.fromRGB(26, 28, 32))
+	for _, side in ipairs({ -1, 1 }) do
+		makePart("CabSide", Vector3.new(3.5, 0.8, 0.18), CFrame.new(4, 1.5, side * 2.5))
+		makePart("WindscreenPillar", Vector3.new(0.2, 3.2, 0.2), CFrame.new(5.65, 3.5, side * 2.5))
+	end
+	local windshield = van:FindFirstChild("Windshield")
+	if windshield then windshield.Transparency = 0.45 end
+
+	local seat = Instance.new("VehicleSeat")
+	seat.Name = "DriverSeat"
+	seat.Size = Vector3.new(1.9, 0.5, 1.9)
+	seat.CFrame = originalFrame * CFrame.new(3.6, 1.6, 0) * CFrame.Angles(0, -math.pi / 2, 0)
+	seat.Color = Color3.fromRGB(23, 25, 29)
+	seat.Material = Enum.Material.Fabric
+	seat.Anchored = true
+	seat.CanTouch = false -- boarding is gated by the delivery prompt
+	seat.CanCollide = true
+	seat.HeadsUpDisplay = false
+	seat.MaxSpeed = settings.ForwardSpeed
+	seat.Torque = 0
+	seat.TurnSpeed = 0
+	seat.Parent = van
+	-- An explicit bridge also works when the anchored seat has no client
+	-- physics ownership. The client reads the normal VehicleSeat controls.
+	local inputRemote = Instance.new("RemoteEvent")
+	inputRemote.Name = "CourierDriveInput"
+	inputRemote.Parent = seat
+
+	local entry = makePart("DriverDoor", Vector3.new(0.3, 0.3, 0.3), CFrame.new(3.6, 2.5, -2.8))
+	entry.Transparency = 1
+	entry.CanCollide = false
+	entry.CanQuery = false
+	local function addPrompt(parent, action, distance)
+		local prompt = Instance.new("ProximityPrompt")
+		prompt.Name = action == "Drive" and "EnterVan" or "ExitVan"
+		prompt.ObjectText = "Courier van"
+		prompt.ActionText = action
+		prompt.KeyboardKeyCode = Enum.KeyCode.E
+		prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
+		prompt.MaxActivationDistance = distance
+		prompt.RequiresLineOfSight = false
+		prompt.HoldDuration = 0
+		prompt.Parent = parent
+		return prompt
+	end
+	local enterPrompt = addPrompt(entry, "Drive", settings.PromptDistance)
+	local exitPrompt = addPrompt(seat, "Get out", 6)
+	exitPrompt.Enabled = false
+
+	local position = Vector3.new(settings.RoadCenterX, settings.GroundY, settings.RoadStartZ)
+	local heading, speed = 0, 0
+	local inputThrottle, inputSteer, inputAt = 0, 0, 0
+	local driver, driverHumanoid, diedConnection
+	local arrived, destroyed, releasing = false, false, false
+	local connections = {}
+	local function pose()
+		return CFrame.new(position) * CFrame.Angles(0, -math.pi / 2 + heading, 0)
+	end
+	local function moveVan()
+		van:SetPrimaryPartCFrame(pose() * CFrame.new(-1.4, 3.1, 0))
+	end
+	moveVan()
+	local function notify(player, message, kind)
+		if settings.Notify and player and player.Parent then settings.Notify(player, message, kind or "info") end
+	end
+	local function clearDriver()
+		if diedConnection then diedConnection:Disconnect() diedConnection = nil end
+		if driver and driver.Parent then driver:SetAttribute("DrivingCourierVan", false) end
+		driver, driverHumanoid = nil, nil
+		speed = 0
+		inputThrottle, inputSteer, inputAt = 0, 0, 0
+		van:SetAttribute("Speed", 0)
+		enterPrompt.Enabled = not arrived and not destroyed
+		exitPrompt.Enabled = false
+	end
+	local function dismount(atTunnel)
+		if releasing then return end
+		releasing = true
+		local player = driver
+		local humanoid = driverHumanoid or seat.Occupant
+		local character = humanoid and humanoid.Parent
+		clearDriver()
+		if humanoid then
+			humanoid.Sit = false
+			local weld = seat:FindFirstChild("SeatWeld")
+			if weld then weld:Destroy() end
+			humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+		end
+		if character and character.Parent and humanoid.Health > 0 then
+			local exitPosition
+			if atTunnel then
+				exitPosition = Vector3.new(settings.RoadCenterX - 5, settings.GroundY + 3.5, settings.StopZ + 6.5)
+			else
+				-- Exit toward the middle of the road when parked near an edge.
+				local side = position.X > settings.RoadCenterX and 1 or -1
+				exitPosition = pose():PointToWorldSpace(Vector3.new(3.5, 3.5, side * 4.5))
+			end
+			local root = character:FindFirstChild("HumanoidRootPart")
+			if root then
+				character.PrimaryPart = root
+				character:SetPrimaryPartCFrame(CFrame.lookAt(exitPosition, exitPosition + Vector3.new(0, 0, 1)))
+				root.AssemblyLinearVelocity = Vector3.zero
+				root.AssemblyAngularVelocity = Vector3.zero
+			end
+		end
+		releasing = false
+		return player
+	end
+
+	table.insert(connections, enterPrompt.Triggered:Connect(function(player)
+		if arrived or destroyed or seat.Occupant or driver then return end
+		if not player:GetAttribute("Delivered") then
+			notify(player, "LOAD THE SPECIMEN CASE BEFORE LEAVING", "warn")
+			return
+		end
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if not humanoid or humanoid.Health <= 0 or not root then return end
+		if (root.Position - entry.Position).Magnitude > settings.PromptDistance + 4 then return end
+		driver, driverHumanoid = player, humanoid
+		player:SetAttribute("DrivingCourierVan", true)
+		enterPrompt.Enabled = false
+		exitPrompt.Enabled = true
+		seat:Sit(humanoid)
+		diedConnection = humanoid.Died:Connect(function() dismount(false) end)
+		notify(player, "DRIVE TO THE TUNNEL. USE MOVEMENT CONTROLS; JUMP OR E TO GET OUT.")
+		-- A failed seat request must never leave the vehicle reserved forever.
+		task.delay(0.6, function()
+			if not destroyed and driver == player and seat.Occupant ~= humanoid then clearDriver() end
+		end)
+	end))
+	table.insert(connections, exitPrompt.Triggered:Connect(function(player)
+		if player == driver then dismount(false) end
+	end))
+	table.insert(connections, seat:GetPropertyChangedSignal("Occupant"):Connect(function()
+		if releasing then return end
+		local humanoid = seat.Occupant
+		if not humanoid then
+			if driver then dismount(false) end
+		elseif humanoid ~= driverHumanoid then
+			-- No bypass through touching or externally calling Sit.
+			humanoid.Sit = false
+			local weld = seat:FindFirstChild("SeatWeld")
+			if weld then weld:Destroy() end
+		end
+	end))
+	table.insert(connections, Players.PlayerRemoving:Connect(function(player)
+		if player == driver then dismount(false) end
+	end))
+	table.insert(connections, inputRemote.OnServerEvent:Connect(function(player, throttle, steer)
+		if player ~= driver or not driverHumanoid or driverHumanoid.Health <= 0
+			or seat.Occupant ~= driverHumanoid or arrived or destroyed then return end
+		if type(throttle) ~= "number" or type(steer) ~= "number"
+			or throttle ~= throttle or steer ~= steer
+			or math.abs(throttle) == math.huge or math.abs(steer) == math.huge then return end
+		local now = os.clock()
+		if now - inputAt < 1 / 40 then return end
+		inputAt = now
+		inputThrottle = math.clamp(throttle, -1, 1)
+		inputSteer = math.clamp(steer, -1, 1)
+	end))
+
+	local castParams = RaycastParams.new()
+	castParams.FilterType = Enum.RaycastFilterType.Exclude
+	castParams.RespectCanCollide = true
+	table.insert(connections, RunService.Heartbeat:Connect(function(dt)
+		if arrived or destroyed or not driverHumanoid then return end
+		if driverHumanoid.Health <= 0 or driver.Character ~= driverHumanoid.Parent then
+			dismount(false)
+			return
+		end
+		if seat.Occupant ~= driverHumanoid then return end
+		dt = math.min(dt, 0.1)
+		local freshInput = os.clock() - inputAt <= settings.InputTimeout
+		local throttle = freshInput and inputThrottle or 0
+		local steer = freshInput and inputSteer or 0
+		local desiredSpeed = throttle >= 0 and throttle * settings.ForwardSpeed or throttle * settings.ReverseSpeed
+		local braking = throttle == 0 or speed * desiredSpeed < 0
+		speed = approach(speed, desiredSpeed, (braking and settings.Braking or settings.Acceleration) * dt)
+		if math.abs(speed) < 0.05 then speed = 0 end
+		local turn = -steer * settings.SteeringRate * dt * math.clamp(speed / 10, -1, 1)
+		heading = math.clamp(heading + turn, -settings.MaxHeading, settings.MaxHeading)
+		if math.abs(steer) < 0.05 then heading = approach(heading, 0, dt * 0.22) end
+		local direction = Vector3.new(math.sin(heading), 0, math.cos(heading))
+		local proposed = position + direction * speed * dt
+		local extent = math.abs(math.sin(heading)) * settings.VehicleHalfLength + math.cos(heading) * settings.VehicleHalfWidth
+		local sideRoom = math.max(0, settings.RoadHalfWidth - extent - 0.3)
+		proposed = Vector3.new(
+			math.clamp(proposed.X, settings.RoadCenterX - sideRoom, settings.RoadCenterX + sideRoom),
+			settings.GroundY,
+			math.clamp(proposed.Z, settings.RoadStartZ, settings.StopZ)
+		)
+		local displacement = proposed - position
+		if displacement.Magnitude > 0.001 then
+			castParams.FilterDescendantsInstances = { van, driverHumanoid.Parent }
+			-- Sweep the full vehicle footprint so collidable scenery and other
+			-- players cannot be driven through. The low road surface is below it.
+			local hit = workspace:Blockcast(pose() * CFrame.new(0.3, 2.8, 0), Vector3.new(11.6, 3.0, 5.1), displacement, castParams)
+			if hit then
+				speed = 0
+			else
+				position = proposed
+				moveVan()
+			end
+		end
+		van:SetAttribute("Speed", math.floor(math.abs(speed)))
+		if position.Z >= settings.StopZ - 0.05 then
+			arrived = true
+			van:SetAttribute("ArrivedAtTunnel", true)
+			local player = dismount(true)
+			enterPrompt.Enabled = false
+			notify(player, "ROAD BLOCKED. CONTINUE THROUGH THE TUNNEL ON FOOT.", "warn")
+			if settings.OnArrived and player then settings.OnArrived(player) end
+		end
+	end))
+
+	local controller = { Seat = seat, EnterPrompt = enterPrompt }
+	function controller.GetPosition() return position end
+	function controller.GetDropOffPosition()
+		local dropoff = van:FindFirstChild("DropOff")
+		return dropoff and dropoff.Position or position
+	end
+	function controller.Destroy()
+		if destroyed then return end
+		destroyed = true
+		dismount(false)
+		for _, connection in ipairs(connections) do connection:Disconnect() end
+		enterPrompt.Enabled = false
+		exitPrompt.Enabled = false
+	end
+	table.insert(connections, van.Destroying:Connect(controller.Destroy))
+	return controller
+end
+
+return Vehicle
+]]></ProtectedString>
+				<string name="ScriptGuid">{BA2AEA60-B289-489A-95A6-D32E00E2790A}</string>
+				<BinaryString name="AttributesSerialize"></BinaryString>
+				<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+				<bool name="DefinesCapabilities">false</bool>
+				<UniqueId name="HistoryId">00000000000000000000000000000000</UniqueId>
+				<string name="Name">CourierVehicle</string>
+				<int64 name="SourceAssetId">-1</int64>
+				<SharedString name="Tags">yuZpQdnvvUBOTYh1jqZ2cA==</SharedString>
+				<UniqueId name="UniqueId">26e019f2b3ef90d70ad7e215000003db</UniqueId>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX5D5A94D1D271434185C2297C89FEF993">
+			<Properties>
+				<Content name="LinkedSource"><null></null></Content>
+				<ProtectedString name="Source"><![CDATA[-- House enemies share the existing server-raycast weapon system.
+local PathfindingService = game:GetService("PathfindingService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Mutants = {}
+local CFG = {
+	Health = 100, Speed = 11, Damage = 15, Reach = 4.5, AttackCooldown = 1.4,
+	RepathSeconds = 0.8, ThinkSeconds = 0.12, TargetRadius = 65,
+	SpawnLift = 1.5, WaypointReach = 1.6,
+	Skin = Color3.fromRGB(104, 116, 94), Cloth = Color3.fromRGB(55, 62, 57),
+	RootSize = Vector3.new(2, 2, 1), TorsoSize = Vector3.new(2.6, 2.5, 1.3),
+	HeadSize = Vector3.new(1.6, 1.6, 1.5), LimbSize = Vector3.new(0.9, 2.3, 1),
+}
+local function part(model, name, size, cf, color, collides)
+	local p = Instance.new("Part")
+	p.Name, p.Size, p.CFrame, p.Color = name, size, cf, color
+	p.Material = Enum.Material.SmoothPlastic
+	p.CanCollide, p.CanTouch, p.Massless = collides or false, false, true
+	p.TopSurface, p.BottomSurface = Enum.SurfaceType.Smooth, Enum.SurfaceType.Smooth
+	p.Parent = model
+	return p
+end
+local function joint(parent, name, a, b, offset)
+	local m = Instance.new("Motor6D")
+	m.Name, m.Part0, m.Part1, m.C0 = name, a, b, offset
+	m.Parent = parent
+	return m
+end
+function Mutants.Create(parent, name, cf, sleeping)
+	-- Authored standing markers sit at player-root height; this longer-legged rig needs clearance.
+	if not sleeping then cf += Vector3.new(0, CFG.SpawnLift, 0) end
+	local model = Instance.new("Model")
+	model.Name = name
+	model:SetAttribute("HeadshotOnly", true)
+	model:SetAttribute("Dormant", sleeping)
+	local root = part(model, "HumanoidRootPart", CFG.RootSize, cf, CFG.Cloth, false)
+	root.Transparency, root.CanQuery, root.Massless, root.Anchored = 1, false, false, true
+	model.PrimaryPart = root
+	local torso = part(model, "Torso", CFG.TorsoSize, cf, CFG.Cloth, true)
+	joint(root, "RootJoint", root, torso, CFrame.new())
+	local headOffset = CFrame.new(0, 1.95, -0.15)
+	local head = part(model, "Head", CFG.HeadSize, cf * headOffset, CFG.Skin)
+	joint(torso, "Neck", torso, head, headOffset)
+	local motors = {}
+	for _, side in ipairs({-1, 1}) do
+		local armOffset = CFrame.new(side * 1.7, -0.1, -0.1)
+		local arm = part(model, side == -1 and "Left Arm" or "Right Arm", CFG.LimbSize, cf * armOffset, CFG.Skin)
+		local armJoint = joint(torso, "Shoulder", torso, arm, armOffset)
+		local legOffset = CFrame.new(side * 0.7, -2.1, 0)
+		local leg = part(model, side == -1 and "Left Leg" or "Right Leg", CFG.LimbSize, cf * legOffset, CFG.Cloth)
+		local legJoint = joint(torso, "Hip", torso, leg, legOffset)
+		table.insert(motors, {arm = armJoint, leg = legJoint, armOffset = armOffset, legOffset = legOffset, side = side})
+		local eye = part(model, "Eye", Vector3.new(0.22, 0.16, 0.08), head.CFrame * CFrame.new(side * 0.4, 0.18, -0.77), Color3.fromRGB(235, 174, 53))
+		eye.Material, eye.CanQuery = Enum.Material.Neon, false
+		joint(head, "EyeWeld", head, eye, CFrame.new(side * 0.4, 0.18, -0.77))
+	end
+	local mouth = part(model, "Mouth", Vector3.new(0.85, 0.18, 0.08), head.CFrame * CFrame.new(0, -0.35, -0.77), Color3.fromRGB(44, 35, 31))
+	mouth.CanQuery = false
+	joint(head, "MouthWeld", head, mouth, CFrame.new(0, -0.35, -0.77))
+	local hum = Instance.new("Humanoid")
+	hum.MaxHealth, hum.Health, hum.WalkSpeed = CFG.Health, CFG.Health, CFG.Speed
+	hum.HipHeight, hum.RequiresNeck, hum.BreakJointsOnDeath = 0.2, false, false
+	hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	hum.Parent = model
+	model.Parent = parent
+	if sleeping then
+		for _, p in ipairs(model:GetDescendants()) do
+			if p:IsA("BasePart") then p.Anchored = true; p.CanCollide = false end
+		end
+	end
+	return model, hum, motors
+end
+function Mutants.StartChase(model, house, onKilled)
+	local hum, root = model.Humanoid, model.PrimaryPart
+	local home = root.CFrame
+	local houseOrigin = house:GetAttribute("Origin") or CFrame.identity
+	root.Anchored = false
+	root:SetNetworkOwner(nil)
+	local lastAttack, nextPath, thinking, clock = {}, 0, false, 0
+	local waypoints, waypoint = {}, 1
+	local activeCharacter, pathVersion, stopped, usingFallback = nil, 0, false, false
+	local connection
+	local function clearPath()
+		pathVersion += 1
+		waypoints, waypoint, nextPath = {}, 1, 0
+		usingFallback = false
+	end
+	local function stop()
+		stopped = true
+		clearPath()
+		if connection then connection:Disconnect(); connection = nil end
+	end
+	local function planarDistance(a, b)
+		local delta = a - b
+		return Vector3.new(delta.X, 0, delta.Z).Magnitude
+	end
+	local function fallbackPath(destination)
+		-- The authored floorplan has a central entrance and bedroom doorway.
+		-- These short corridor waypoints remain usable before the navmesh is ready.
+		local from = houseOrigin:PointToObjectSpace(root.Position)
+		local to = houseOrigin:PointToObjectSpace(destination)
+		local points = {}
+		local function add(z)
+			table.insert(points, {Position = houseOrigin:PointToWorldSpace(Vector3.new(0, 4.5, z))})
+		end
+		if from.Z > 39 and to.Z < 39 then add(41); add(38); add(35) end
+		if from.Z >= 19 and to.Z < 19 then add(22); add(19); add(16) end
+		if from.Z < 19 and to.Z >= 19 then add(16); add(19); add(22) end
+		if from.Z < 39 and to.Z >= 39 then add(35); add(38); add(41) end
+		table.insert(points, {Position = destination})
+		return points
+	end
+	hum.Died:Connect(function()
+		stop()
+		model:SetAttribute("Defeated", true)
+		for _, p in ipairs(model:GetDescendants()) do
+			if p:IsA("BasePart") then p.CanCollide = false; p.CanQuery = false end
+		end
+		root.Anchored = true
+		model:SetPrimaryPartCFrame(root.CFrame * CFrame.Angles(math.rad(85), 0, 0) - Vector3.new(0, 1.7, 0))
+		if model:GetAttribute("HeadshotKilled") then onKilled(model:GetAttribute("LastHitUserId")) end
+	end)
+	connection = RunService.Heartbeat:Connect(function(dt)
+		if not model.Parent then stop(); return end
+		clock += dt
+		if clock < CFG.ThinkSeconds or hum.Health <= 0 then return end
+		clock = 0
+		local target, distance
+		for _, p in ipairs(Players:GetPlayers()) do
+			local character = p.Character
+			local h = character and character:FindFirstChildOfClass("Humanoid")
+			local r = character and character:FindFirstChild("HumanoidRootPart")
+			local stage = p:GetAttribute("EscapeStage") or 0
+			if r and h and h.Health > 0 and stage >= 6 and stage < 8
+				and planarDistance(r.Position, home.Position) <= CFG.TargetRadius then
+				local d = (r.Position - root.Position).Magnitude
+				if d < CFG.TargetRadius and (not distance or d < distance) then target, distance = p, d end
+			end
+		end
+		local targetCharacter = target and target.Character
+		local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+		local targetHum = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
+		if targetCharacter ~= activeCharacter then
+			activeCharacter = targetCharacter
+			clearPath()
+		end
+		local destination = targetRoot and targetRoot.Position or home.Position
+		if not targetRoot and planarDistance(root.Position, destination) <= CFG.WaypointReach then
+			hum:MoveTo(root.Position)
+			return
+		end
+		local ray = RaycastParams.new()
+		ray.FilterType = Enum.RaycastFilterType.Exclude
+		ray.FilterDescendantsInstances = {model}
+		local obstruction = workspace:Raycast(root.Position, destination - root.Position, ray)
+		local visible = not obstruction or (targetCharacter and obstruction.Instance:IsDescendantOf(targetCharacter))
+		if visible then
+			hum:MoveTo(destination)
+		elseif os.clock() >= nextPath and not thinking then
+			thinking = true
+			nextPath = os.clock() + CFG.RepathSeconds
+			local requestVersion = pathVersion
+			local pathStart, pathEnd = root.Position, destination
+			task.spawn(function()
+				local path = PathfindingService:CreatePath({AgentRadius = 1.7, AgentHeight = 6, AgentCanJump = false, WaypointSpacing = 3})
+				local ok = pcall(function() path:ComputeAsync(pathStart, pathEnd) end)
+				thinking = false
+				if stopped or not model.Parent or requestVersion ~= pathVersion then return end
+				if ok and path.Status == Enum.PathStatus.Success then
+					waypoints, waypoint = path:GetWaypoints(), 2
+					usingFallback = false
+				else
+					if usingFallback and waypoints[waypoint] then
+						-- Keep doorway progress when repeated navmesh requests fail.
+						waypoints[#waypoints].Position = pathEnd
+					else
+						waypoints, waypoint = fallbackPath(pathEnd), 1
+					end
+					usingFallback = true
+				end
+			end)
+		end
+		if not visible and waypoints[waypoint] then
+			if planarDistance(root.Position, waypoints[waypoint].Position) < CFG.WaypointReach then waypoint += 1 end
+			if waypoints[waypoint] then hum:MoveTo(waypoints[waypoint].Position) end
+		end
+		if targetHum and visible and distance <= CFG.Reach and os.clock() - (lastAttack[target] or -math.huge) >= CFG.AttackCooldown then
+			lastAttack[target] = os.clock()
+			targetHum:TakeDamage(CFG.Damage)
+		end
+		-- Procedural stride replicates from server without an external animation asset.
+		local moving = root.AssemblyLinearVelocity.Magnitude > 1
+		for _, motor in ipairs(model.Torso:GetChildren()) do
+			if motor:IsA("Motor6D") and motor.Name == "Hip" then
+				local side = motor.Part1.Name == "Left Leg" and -1 or 1
+				motor.C0 = CFrame.new(side * 0.7, -2.1, 0) * CFrame.Angles(moving and math.sin(os.clock() * 9) * side * 0.5 or 0, 0, 0)
+			elseif motor:IsA("Motor6D") and motor.Name == "Shoulder" then
+				local side = motor.Part1.Name == "Left Arm" and -1 or 1
+				motor.C0 = CFrame.new(side * 1.7, -0.1, -0.1) * CFrame.Angles(-0.8, 0, side * 0.18)
+			end
+		end
+	end)
+	return stop
+end
+return Mutants
+]]></ProtectedString>
+				<string name="ScriptGuid">{36F37C77-4039-4D13-B514-FA67022F74E6}</string>
+				<BinaryString name="AttributesSerialize"></BinaryString>
+				<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+				<bool name="DefinesCapabilities">false</bool>
+				<UniqueId name="HistoryId">00000000000000000000000000000000</UniqueId>
+				<string name="Name">EscapeMutants</string>
+				<int64 name="SourceAssetId">-1</int64>
+				<SharedString name="Tags">yuZpQdnvvUBOTYh1jqZ2cA==</SharedString>
+				<UniqueId name="UniqueId">26e019f2b3ef90d70ad7e215000003dc</UniqueId>
+			</Properties>
+		</Item>
+		<Item class="Script" referent="RBX85C21FE6126041F58D9CBCA9334429DF">
+			<Properties>
+				<ProtectedString name="Source"><![CDATA[-- Chapter two: courier van -> tunnel ambush/key -> gate -> ranger house.
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
+local Builder = require(ServerScriptService:WaitForChild("EscapeHouseBuilder"))
+local Mutants = require(ServerScriptService:WaitForChild("EscapeMutants"))
+local Vehicle = require(ServerScriptService:WaitForChild("CourierVehicle"))
+local forest = workspace:WaitForChild("ForestTunnel")
+local floor = forest:WaitForChild("VanFloor")
+local gate = forest:WaitForChild("GateLeaf")
+local gatePosition = gate.Position -- the gate later slides upward
+local road = forest:WaitForChild("AsphaltRoad")
+local groundY = floor.Position.Y - 0.75
+local CFG = {
+	FenceDamage = 20, FenceCooldown = 2, RefillCooldown = 8,
+	PromptDistance = 9, ThinkSeconds = 0.1, AmbushDelay = 7,
+	HouseOrigin = CFrame.new(road.Position.X, groundY, gatePosition.Z + 16),
+	TunnelStopZ = floor.Position.Z - 36,
+}
+local house = Builder.Build(CFG.HouseOrigin)
+local oldActors = house:FindFirstChild("Actors")
+if oldActors then oldActors:Destroy() end
+local actors = Instance.new("Folder")
+actors.Name, actors.Parent = "Actors", house
+local sleeper = Mutants.Create(actors, "BedMutant", house.SleeperSpawn.CFrame, true)
+local remote = ReplicatedStorage:WaitForChild("CourierRemote")
+local weapon = ReplicatedStorage:WaitForChild("SurvivalWeapon")
+local weaponConfig = require(weapon:WaitForChild("Config"))
+local addAmmo = weapon:WaitForChild("AddAmmo")
+local van = workspace:WaitForChild("CourierWorld"):WaitForChild("CourierVan")
+local vehicle
+local runner, ambushQueued, runnerDefeated = nil, false, false
+local previous, shocks, refills = {}, {}, {}
+local function notify(player, text, kind)
+	remote:FireClient(player, "Notice", text, kind or "info")
+end
+local function alive(player)
+	local character = player.Character
+	local hum = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if hum and root and hum.Health > 0 then return character, hum, root end
+end
+local function near(player, part)
+	local character, hum, root = alive(player)
+	if root and (root.Position - part.Position).Magnitude <= CFG.PromptDistance + 1 then return character, hum, root end
+end
+local function checkpoint(player, position)
+	player:SetAttribute("EscapeCheckpoint", CFrame.lookAt(position, position + Vector3.new(0, 0, 1)))
+end
+local function objective(player)
+	local stage = player:GetAttribute("EscapeStage") or 0
+	local text, pos
+	if stage == 1 then text, pos = "Enter the courier van. Drive to the evacuation tunnel.", vehicle.Seat.Position
+	elseif stage == 2 then text, pos = "Drive to the tunnel. W/S accelerate and brake; A/D steer.", Vector3.new(road.Position.X, groundY + 3, CFG.TunnelStopZ)
+	elseif stage == 3 then text, pos = "Road blocked. Cross the wrecked van and find the gate key.", forest.GateKey.Position
+	elseif stage == 4 then text, pos = "Use the tunnel key, then cross the exit gate.", gatePosition
+	elseif stage == 5 then text, pos = "Reach the house through the live fence. Expect a shock.", house.ElectricThreshold.Position
+	elseif stage == 6 then text, pos = "Get inside. Refill ammunition at the supply crate.", house.AmmoCrate.Position
+	elseif stage == 7 then text, pos = "Kill the charging mutant. Only a HEADSHOT will stop it.", runner and runner.PrimaryPart.Position or house.AttackerSpawn.Position
+	elseif stage == 8 then text = "House secured. You survived the evacuation route."
+	else return end
+	player:SetAttribute("Objective", text)
+	player:SetAttribute("ObjectivePos", pos)
+end
+local function advance(player, stage)
+	if (player:GetAttribute("EscapeStage") or 0) >= stage then return end
+	player:SetAttribute("EscapeStage", stage)
+	objective(player)
+end
+local function complete(player)
+	if (player:GetAttribute("EscapeStage") or 0) ~= 7 then return end
+	advance(player, 8)
+	player:SetAttribute("EscapeComplete", true)
+	checkpoint(player, house.YardCheckpoint.Position)
+	local now = workspace:GetServerTimeNow()
+	player:SetAttribute("FinishTime", now)
+	remote:FireClient(player, "ChapterComplete", now - (player:GetAttribute("StartTime") or now), player:GetAttribute("Deaths") or 0)
+end
+local function beginAmbush()
+	if ambushQueued or runnerDefeated then return end
+	ambushQueued = true
+	task.delay(CFG.AmbushDelay, function()
+		if not house.Parent then return end
+		runner = Mutants.Create(actors, "ChargingMutant", house.AttackerSpawn.CFrame, false)
+		Mutants.StartChase(runner, house, function(killerId)
+			runnerDefeated = true
+			house:SetAttribute("RunnerDefeated", true)
+			house:SetAttribute("RunnerKilledBy", killerId)
+			for _, p in ipairs(Players:GetPlayers()) do
+				if (p:GetAttribute("EscapeStage") or 0) == 7 then complete(p) end
+			end
+		end)
+		for _, p in ipairs(Players:GetPlayers()) do
+			if (p:GetAttribute("EscapeStage") or 0) == 7 then notify(p, "IT'S COMING! AIM FOR THE HEAD.", "warn") end
+		end
+	end)
+end
+vehicle = Vehicle.Attach(van, {
+	RoadCenterX = road.Position.X, RoadStartZ = road.Position.Z - road.Size.Z / 2 + 6,
+	StopZ = CFG.TunnelStopZ, GroundY = groundY,
+	Notify = notify,
+	OnArrived = function(player)
+		player:SetAttribute("DroveToTunnel", true)
+		advance(player, 3)
+		checkpoint(player, Vector3.new(road.Position.X, groundY + 3.5, CFG.TunnelStopZ + 7))
+		notify(player, "ROAD BLOCKED. Leave the car and cross the wrecked van.", "warn")
+	end,
+})
+local ammoPrompt = Instance.new("ProximityPrompt")
+ammoPrompt.Name, ammoPrompt.ObjectText, ammoPrompt.ActionText = "RefillAmmo", "Ranger ammunition cache", "Refill handgun ammo"
+ammoPrompt.HoldDuration, ammoPrompt.MaxActivationDistance = 0.6, CFG.PromptDistance
+ammoPrompt.RequiresLineOfSight = false
+ammoPrompt.KeyboardKeyCode = Enum.KeyCode.E
+ammoPrompt.Parent = house.AmmoCrate
+ammoPrompt.Triggered:Connect(function(player)
+	if not near(player, house.AmmoCrate) or (player:GetAttribute("EscapeStage") or 0) < 6 then return end
+	if os.clock() - (refills[player] or -math.huge) < CFG.RefillCooldown then
+		notify(player, "Check the cache again in a moment.")
+		return
+	end
+	refills[player] = os.clock()
+	addAmmo:Fire(player, weaponConfig.MaxReserve)
+	player:SetAttribute("HouseAmmoRefilled", true)
+	notify(player, "AMMO REFILLED. Press R to reload. Aim for the mutant's head.", "item")
+	advance(player, 7)
+	checkpoint(player, house.YardCheckpoint.Position)
+	if runnerDefeated then complete(player) else beginAmbush() end
+end)
+local function startPlayer(player)
+	local function deliveryChanged()
+		if player:GetAttribute("Delivered") and not player:GetAttribute("EscapeStage") then
+			advance(player, 1)
+			checkpoint(player, Vector3.new(vehicle.Seat.Position.X + 6, groundY + 3.5, vehicle.Seat.Position.Z))
+			notify(player, "CASE LOADED. Enter the driver's seat to continue.", "item")
+		end
+	end
+	player:GetAttributeChangedSignal("Delivered"):Connect(deliveryChanged)
+	player.CharacterAdded:Connect(function() previous[player], shocks[player] = nil, nil end)
+	deliveryChanged()
+end
+Players.PlayerAdded:Connect(startPlayer)
+for _, player in ipairs(Players:GetPlayers()) do startPlayer(player) end
+Players.PlayerRemoving:Connect(function(player) previous[player], shocks[player], refills[player] = nil, nil, nil end)
+local function inside(part, position, margin)
+	local p = part.CFrame:PointToObjectSpace(position)
+	local half = part.Size / 2 + Vector3.new(margin or 0, margin or 0, margin or 0)
+	return math.abs(p.X) <= half.X and math.abs(p.Y) <= half.Y and math.abs(p.Z) <= half.Z
+end
+local function crossedFence(a, b)
+	local threshold = house.ElectricThreshold
+	if inside(threshold, b) then return true end
+	if not a or (b - a).Magnitude > 40 then return false end
+	local localA, localB = threshold.CFrame:PointToObjectSpace(a), threshold.CFrame:PointToObjectSpace(b)
+	if localA.Z * localB.Z > 0 or math.abs(localB.Z - localA.Z) < 0.001 then return false end
+	local hit = localA:Lerp(localB, -localA.Z / (localB.Z - localA.Z))
+	return math.abs(hit.X) <= threshold.Size.X / 2 and math.abs(hit.Y) <= threshold.Size.Y / 2
+end
+local elapsed = 0
+RunService.Heartbeat:Connect(function(dt)
+	elapsed += dt
+	if elapsed < CFG.ThinkSeconds then return end
+	elapsed = 0
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character, hum, root = alive(player)
+		local stage = player:GetAttribute("EscapeStage") or 0
+		if root and stage > 0 then
+			if stage <= 2 then
+				if van:GetAttribute("ArrivedAtTunnel") then
+					-- Other couriers can follow the already-cleared drive on foot.
+					advance(player, 3)
+					checkpoint(player, Vector3.new(road.Position.X, groundY + 3.5, CFG.TunnelStopZ + 7))
+				else
+					local seated = vehicle.Seat.Occupant == hum
+					local targetStage = seated and 2 or 1
+					if stage ~= targetStage then player:SetAttribute("EscapeStage", targetStage) end
+				end
+			elseif stage == 3 and player:GetAttribute("ForestGateKey") then
+				advance(player, 4)
+				checkpoint(player, Vector3.new(road.Position.X, groundY + 3.5, floor.Position.Z + 22))
+			elseif stage == 4 and forest:GetAttribute("GateOpen") and root.Position.Z > gatePosition.Z + 3 then
+				advance(player, 5)
+				checkpoint(player, Vector3.new(road.Position.X, groundY + 3.5, gatePosition.Z + 7))
+				notify(player, "A HOUSE AHEAD. The fence is still powered.", "warn")
+			end
+			stage = player:GetAttribute("EscapeStage") or 0
+			if stage >= 5 then
+				if crossedFence(previous[player], root.Position) and os.clock() - (shocks[player] or -math.huge) >= CFG.FenceCooldown then
+					shocks[player] = os.clock()
+					hum.Health = math.max(0, hum.Health - CFG.FenceDamage)
+					character:SetAttribute("ElectricFenceHit", true)
+					notify(player, "ELECTRIC SHOCK! -" .. CFG.FenceDamage .. " HEALTH", "warn")
+				end
+				local localPos = house.ElectricThreshold.CFrame:PointToObjectSpace(root.Position)
+				if stage == 5 and character:GetAttribute("ElectricFenceHit") and localPos.Z > 2 and hum.Health > 0 then
+					advance(player, 6)
+					checkpoint(player, house.YardCheckpoint.Position)
+				end
+			end
+			previous[player] = root.Position
+			objective(player)
+		end
+	end
+end)
+]]></ProtectedString>
+				<bool name="Disabled">false</bool>
+				<Content name="LinkedSource"><null></null></Content>
+				<token name="RunContext">0</token>
+				<string name="ScriptGuid">{B4933566-6F1D-4201-AEFE-A97FE25AAC9F}</string>
+				<BinaryString name="AttributesSerialize"></BinaryString>
+				<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+				<bool name="DefinesCapabilities">false</bool>
+				<UniqueId name="HistoryId">00000000000000000000000000000000</UniqueId>
+				<string name="Name">EscapeChapter</string>
+				<int64 name="SourceAssetId">-1</int64>
+				<SharedString name="Tags">yuZpQdnvvUBOTYh1jqZ2cA==</SharedString>
+				<UniqueId name="UniqueId">26e019f2b3ef90d70ad7e215000003dd</UniqueId>
 			</Properties>
 		</Item>
 	</Item>
@@ -56181,7 +57626,8 @@ end)
 			<float name="ShadowSoftness">0.200000003</float>
 			<token name="Technology">3</token>
 			<string name="TimeOfDay">18:00:00</string>
-			<BinaryString name="AttributesSerialize">AQAAACYAAABSQlhfTGlnaHRpbmdUZWNobm9sb2d5VW5pZmllZE1pZ3JhdGlvbgMB</BinaryString>
+			<BinaryString name="AttributesSerialize"><![CDATA[AgAAACYAAABSQlhfTGlnaHRpbmdUZWNobm9sb2d5VW5pZmllZE1pZ3JhdGlvbgMBIAAAAFJC
+WF9PcmlnaW5hbFRlY2hub2xvZ3lPbkZpbGVMb2FkBAMAAAA=]]></BinaryString>
 			<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
 			<bool name="DefinesCapabilities">false</bool>
 			<UniqueId name="HistoryId">00000000000000000000000000000000</UniqueId>

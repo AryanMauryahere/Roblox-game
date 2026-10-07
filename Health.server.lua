@@ -1,0 +1,4 @@
+-- Health (Script, StarterPlayer > StarterCharacterScripts)
+-- Intentionally empty. A script with this name replaces Roblox's default "Health" script,
+-- which is what regenerates health over time. In a survival horror game health should only
+-- come back from first aid sprays.
