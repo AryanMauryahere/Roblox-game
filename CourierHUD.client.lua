@@ -132,7 +132,7 @@ barFill.Parent = barTrack
 ----------------------------------------------------------------------
 local objPanel = panel(gui, "Objective", UDim2.new(0, 340, 0, 82), UDim2.new(0, 24, 0, 56))
 label(objPanel, "Caption", "OBJECTIVE", UDim2.new(0, 120, 0, 14), UDim2.new(0, 14, 0, 8), 11, Enum.Font.GothamMedium, COLORS.dim)
-local arrow = label(objPanel, "Arrow", "▲", UDim2.new(0, 30, 0, 30), UDim2.new(0, 12, 0, 34), 24, Enum.Font.GothamBold, COLORS.caution, Enum.TextXAlignment.Center)
+local arrow = label(objPanel, "Arrow", "â–²", UDim2.new(0, 30, 0, 30), UDim2.new(0, 12, 0, 34), 24, Enum.Font.GothamBold, COLORS.caution, Enum.TextXAlignment.Center)
 arrow.AnchorPoint = Vector2.new(0, 0)
 local objText = label(objPanel, "Text", "", UDim2.new(1, -62, 0, 38), UDim2.new(0, 50, 0, 24), 14, Enum.Font.GothamMedium, COLORS.text)
 objText.TextWrapped = true
@@ -397,6 +397,9 @@ remote.OnClientEvent:Connect(function(action, a, b)
 		showComplete(a, b)
 	elseif action == "ChapterComplete" then
 		endTitle.Text = "HOUSE SECURED"
+		showComplete(a, b)
+	elseif action == "CityComplete" then
+		endTitle.Text = "BUTTERFLY CORPS"
 		showComplete(a, b)
 	end
 end)

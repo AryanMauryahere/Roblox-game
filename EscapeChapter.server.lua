@@ -58,7 +58,9 @@ local function objective(player)
 	elseif stage == 5 then text, pos = "Reach the house through the live fence. Expect a shock.", house.ElectricThreshold.Position
 	elseif stage == 6 then text, pos = "Get inside. Refill ammunition at the supply crate.", house.AmmoCrate.Position
 	elseif stage == 7 then text, pos = "Kill the charging mutant. Only a HEADSHOT will stop it.", runner and runner.PrimaryPart.Position or house.AttackerSpawn.Position
-	elseif stage == 8 then text = "House secured. You survived the evacuation route."
+	elseif stage == 8 then
+		if player:GetAttribute("CityStage") then return end
+		text = "House secured. Find a vehicle to reach Raccoon City."
 	else return end
 	player:SetAttribute("Objective", text)
 	player:SetAttribute("ObjectivePos", pos)
@@ -72,10 +74,9 @@ local function complete(player)
 	if (player:GetAttribute("EscapeStage") or 0) ~= 7 then return end
 	advance(player, 8)
 	player:SetAttribute("EscapeComplete", true)
+	player:SetAttribute("HouseCleared", true)
 	checkpoint(player, house.YardCheckpoint.Position)
-	local now = workspace:GetServerTimeNow()
-	player:SetAttribute("FinishTime", now)
-	remote:FireClient(player, "ChapterComplete", now - (player:GetAttribute("StartTime") or now), player:GetAttribute("Deaths") or 0)
+	notify(player, "HOUSE SECURED. There is a car in the courtyard.", "item")
 end
 local function beginAmbush()
 	if ambushQueued or runnerDefeated then return end
@@ -127,6 +128,7 @@ ammoPrompt.Triggered:Connect(function(player)
 	checkpoint(player, house.YardCheckpoint.Position)
 	if runnerDefeated then complete(player) else beginAmbush() end
 end)
+house:SetAttribute("EscapeRuntimeReady", true)
 local function startPlayer(player)
 	local function deliveryChanged()
 		if player:GetAttribute("Delivered") and not player:GetAttribute("EscapeStage") then

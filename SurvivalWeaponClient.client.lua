@@ -106,7 +106,7 @@ local function action(name, state, input)
 		if name == "WeaponReload" then
 			remote:FireServer("Reload")
 		elseif name == "WeaponFire" then
-			if reloading() then inform("RELOADING — WAIT") return Enum.ContextActionResult.Sink end
+			if reloading() then inform("RELOADING â€” WAIT") return Enum.ContextActionResult.Sink end
 			if not aiming then inform("AIM BEFORE FIRING") return Enum.ContextActionResult.Sink end
 			local now = os.clock()
 			if now < localCooldown then return Enum.ContextActionResult.Sink end
@@ -177,11 +177,11 @@ local function updateControls()
 		return
 	end
 	if UserInputService.PreferredInput == Enum.PreferredInput.Touch then
-		controls.Text = "TAP AIM TO TOGGLE  •  FIRE  •  RELOAD"
+		controls.Text = "TAP AIM TO TOGGLE  â€¢  FIRE  â€¢  RELOAD"
 	elseif UserInputService.PreferredInput == Enum.PreferredInput.Gamepad then
-		controls.Text = "LT AIM  •  RT FIRE  •  Y RELOAD  •  ↓ HOLSTER"
+		controls.Text = "LT AIM  â€¢  RT FIRE  â€¢  Y RELOAD  â€¢  â†“ HOLSTER"
 	else
-		controls.Text = "RMB AIM  •  LMB FIRE  •  R RELOAD  •  V HOLSTER"
+		controls.Text = "RMB AIM  â€¢  LMB FIRE  â€¢  R RELOAD  â€¢  V HOLSTER"
 	end
 end
 updateControls()
@@ -249,7 +249,7 @@ RunService:BindToRenderStep("SurvivalShoulderCamera", Enum.RenderPriority.Camera
 	local screen, onScreen = camera:WorldToViewportPoint(camera.CFrame.Position + direction * 100)
 	reticle.Position = UDim2.fromOffset(screen.X, screen.Y)
 	reticle.Visible = aiming and not reloading() and onScreen and canInput()
-	reticle.Text = os.clock() < hitUntil and "×" or "+"
+	reticle.Text = os.clock() < hitUntil and "Ã—" or "+"
 	reticle.TextColor3 = os.clock() < hitUntil and Color3.fromRGB(233,160,135) or Color3.fromRGB(231,235,238)
 end)
 
@@ -426,7 +426,7 @@ table.insert(connections, RunService.Heartbeat:Connect(function()
 	end
 	reloadTrack.Visible = loading and not driving
 	if driving then
-		status.Text = "DRIVING TO THE TUNNEL"
+		status.Text = player:GetAttribute("CourtyardDriving") and "COURTYARD CAR  /  RACCOON CITY" or "DRIVING TO THE TUNNEL"
 	elseif loading then
 		local remaining = math.max(0,(player:GetAttribute("WeaponReloadEnd") or now)-now)
 		local progress = math.clamp(1-remaining/Config.ReloadSeconds,0,1)
@@ -440,7 +440,7 @@ table.insert(connections, RunService.Heartbeat:Connect(function()
 	elseif not armed() then
 		status.Text = "HOLSTERED"
 	elseif (player:GetAttribute("WeaponMagazine") or 0) == 0 then
-		status.Text = (player:GetAttribute("WeaponReserve") or 0) > 0 and "EMPTY — RELOAD" or "OUT OF AMMUNITION"
+		status.Text = (player:GetAttribute("WeaponReserve") or 0) > 0 and "EMPTY â€” RELOAD" or "OUT OF AMMUNITION"
 	else
 		status.Text = "EVERY ROUND COUNTS"
 	end

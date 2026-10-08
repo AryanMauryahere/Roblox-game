@@ -213,7 +213,7 @@ remote.OnServerEvent:Connect(function(player, action, origin, direction)
 	end
 	if action ~= "Fire" or state.reloading or clock - state.lastShot < Config.ShotInterval then return end
 	if state.magazine <= 0 then
-		tell(player, state.reserve > 0 and "EMPTY — RELOAD" or "OUT OF AMMUNITION")
+		tell(player, state.reserve > 0 and "EMPTY â€” RELOAD" or "OUT OF AMMUNITION")
 		return
 	end
 	if not finiteVector(origin) or not finiteVector(direction) then return end

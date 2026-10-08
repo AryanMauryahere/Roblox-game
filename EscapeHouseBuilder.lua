@@ -2,7 +2,7 @@
 -- originCf is the centre of the fence entrance; local +Z leads toward the house.
 local CONFIG = {
 	Name = "EscapeHouse",
-	Version = 1,
+	Version = 2,
 	HouseWidth = 30,
 	HouseDepth = 32,
 	HouseFront = 19,
@@ -15,14 +15,18 @@ local CONFIG = {
 	DoorHeight = 8,
 	BedroomFront = 38,
 	BedroomDoorWidth = 7,
-	FenceHalfWidth = 24,
-	FenceDepth = 62,
+	FenceHalfWidth = 56,
+	FenceDepth = 120,
 	FenceHeight = 9,
 	FencePostSpacing = 8,
 	FenceWireSpacing = 1.3,
 	FenceGateWidth = 8,
 	FencePostSize = 0.35,
 	FenceWireSize = 0.09,
+	ExitGateX = 34,
+	ExitGateWidth = 16,
+	ExitGateHeight = 8,
+	CarLaneWidth = 16,
 	RoofHalfSpan = 17,
 	RoofRise = 4.4,
 	RoofThickness = 0.45,
@@ -55,13 +59,16 @@ local CONFIG = {
 }
 
 local function Build(originCf)
+	assert(typeof(originCf) == "CFrame", "EscapeHouseBuilder.Build requires a CFrame")
 	local previous = workspace:FindFirstChild(CONFIG.Name)
 	if previous then
 		assert(previous:IsA("Model") and previous:GetAttribute("GeneratedEscapeHouse"),
 			"EscapeHouse name is already used by an unrelated instance")
-		return previous
+		if previous:GetAttribute("LayoutVersion") == CONFIG.Version then
+			return previous
+		end
+		previous:Destroy()
 	end
-	assert(typeof(originCf) == "CFrame", "EscapeHouseBuilder.Build requires a CFrame")
 	local house = Instance.new("Model")
 	house.Name = CONFIG.Name
 	house:SetAttribute("GeneratedEscapeHouse", true)
@@ -134,8 +141,18 @@ local function Build(originCf)
 	end
 
 	-- A shallow snowy pad covers the extension beyond the old forest map.
-	part("SnowYard", Vector3.new(52, 1, 66), Vector3.new(0, -0.5, 31), C.Snow, Enum.Material.Snow)
+	part("SnowYard", Vector3.new(CONFIG.FenceHalfWidth * 2 + 8, 1, CONFIG.FenceDepth + 12),
+		Vector3.new(0, -0.5, CONFIG.FenceDepth / 2 + 3), C.Snow, Enum.Material.Snow)
 	part("ApproachPath", Vector3.new(8, 0.08, 18), Vector3.new(0, 0.045, 8), C.Metal, Enum.Material.Slate)
+	part("CourtyardCrossPath", Vector3.new(40, 0.09, 7), Vector3.new(17, 0.05, 10), C.Metal, Enum.Material.Pebble)
+	part("DrivewayApproach", Vector3.new(12, 0.1, 36), Vector3.new(CONFIG.ExitGateX, 0.055, 28), C.Metal, Enum.Material.Pebble)
+	part("CourtyardRoad", Vector3.new(CONFIG.CarLaneWidth, 0.15, 84), Vector3.new(CONFIG.ExitGateX, 0.075, 86),
+		Color3.fromRGB(44, 48, 49), Enum.Material.Asphalt)
+	for _, x in ipairs({CONFIG.ExitGateX - CONFIG.CarLaneWidth / 2 + 0.7, CONFIG.ExitGateX + CONFIG.CarLaneWidth / 2 - 0.7}) do
+		part("DrivewayEdgeLine", Vector3.new(0.13, 0.025, 79), Vector3.new(x, 0.16, 85.5), C.Text, Enum.Material.SmoothPlastic, nil, false)
+	end
+	part("KennelPath", Vector3.new(21, 0.08, 5), Vector3.new(-23, 0.045, 65), C.WoodDark, Enum.Material.Pebble)
+	part("RearGardenPath", Vector3.new(8, 0.08, 18), Vector3.new(0, 0.045, 60), C.Metal, Enum.Material.Pebble)
 	part("Foundation", Vector3.new(31, 0.65, 33), Vector3.new(0, 0.25, centreZ), C.Metal, Enum.Material.Concrete)
 	part("CabinFloor", Vector3.new(CONFIG.HouseWidth, CONFIG.FloorThickness, CONFIG.HouseDepth),
 		Vector3.new(0, CONFIG.FloorTop - CONFIG.FloorThickness / 2, centreZ), C.Floor)
@@ -311,11 +328,18 @@ local function Build(originCf)
 		fencePanel("SideFence", Vector3.new(x, 0, 0), Vector3.new(x, 0, CONFIG.FenceDepth))
 	end
 	for x = -CONFIG.FenceHalfWidth + CONFIG.FencePostSpacing, CONFIG.FenceHalfWidth - CONFIG.FencePostSpacing, CONFIG.FencePostSpacing do
-		fencePost(x, CONFIG.FenceDepth)
+		if x < CONFIG.ExitGateX - CONFIG.ExitGateWidth / 2 or x > CONFIG.ExitGateX + CONFIG.ExitGateWidth / 2 then
+			fencePost(x, CONFIG.FenceDepth)
+		end
 		if math.abs(x) > CONFIG.FenceGateWidth / 2 then fencePost(x, 0) end
 	end
 	for _, x in ipairs({-CONFIG.FenceGateWidth / 2, CONFIG.FenceGateWidth / 2}) do fencePost(x, 0) end
-	fencePanel("BackFence", Vector3.new(-CONFIG.FenceHalfWidth, 0, CONFIG.FenceDepth), Vector3.new(CONFIG.FenceHalfWidth, 0, CONFIG.FenceDepth))
+	local gateLeft = CONFIG.ExitGateX - CONFIG.ExitGateWidth / 2
+	local gateRight = CONFIG.ExitGateX + CONFIG.ExitGateWidth / 2
+	fencePanel("BackFence", Vector3.new(-CONFIG.FenceHalfWidth, 0, CONFIG.FenceDepth), Vector3.new(gateLeft, 0, CONFIG.FenceDepth))
+	fencePanel("BackFence", Vector3.new(gateRight, 0, CONFIG.FenceDepth), Vector3.new(CONFIG.FenceHalfWidth, 0, CONFIG.FenceDepth))
+	fencePost(gateLeft, CONFIG.FenceDepth)
+	fencePost(gateRight, CONFIG.FenceDepth)
 	fencePanel("FrontFence", Vector3.new(-CONFIG.FenceHalfWidth, 0, 0), Vector3.new(-CONFIG.FenceGateWidth / 2, 0, 0))
 	fencePanel("FrontFence", Vector3.new(CONFIG.FenceGateWidth / 2, 0, 0), Vector3.new(CONFIG.FenceHalfWidth, 0, 0))
 	for _, y in ipairs({1.2, 2.8, 4.4, 6, 7.6}) do
@@ -328,11 +352,89 @@ local function Build(originCf)
 	part("PowerBox", Vector3.new(1.5, 2.5, 0.7), Vector3.new(-4.7, 3, -0.3), C.Metal, Enum.Material.Metal)
 	lamp("PowerIndicator", Vector3.new(-4.7, 3.5, -0.72), C.Electric, 0.6, 5)
 
+	-- One movable gate assembly. Disabling Barrier opens collision across its whole width.
+	-- The right-hand gap in the decorative bars makes the emergency pedestrian route legible.
+	local exitGate = Instance.new("Model")
+	exitGate.Name = "ExitGate"
+	exitGate:SetAttribute("EmergencyGapX", 40)
+	exitGate:SetAttribute("ClosedCFrame", originCf * CFrame.new(CONFIG.ExitGateX, 4, CONFIG.FenceDepth))
+	exitGate.Parent = house
+	local barrier = part("Barrier", Vector3.new(CONFIG.ExitGateWidth, CONFIG.ExitGateHeight, 0.5),
+		Vector3.new(CONFIG.ExitGateX, CONFIG.ExitGateHeight / 2, CONFIG.FenceDepth), C.Metal, Enum.Material.Metal)
+	barrier.Transparency = 1
+	barrier.Parent = exitGate
+	exitGate.PrimaryPart = barrier
+	local function gatePart(name, size, position, color)
+		local piece = part(name, size, position, color or C.Metal, Enum.Material.Metal, nil, false)
+		piece.Parent = exitGate
+		return piece
+	end
+	for _, y in ipairs({0.55, 7.6}) do
+		gatePart("GateFrame", Vector3.new(CONFIG.ExitGateWidth, 0.28, 0.3), Vector3.new(CONFIG.ExitGateX, y, CONFIG.FenceDepth))
+	end
+	for x = gateLeft + 0.4, gateRight - 3.7, 1.55 do
+		gatePart("GateSlat", Vector3.new(0.15, 7, 0.22), Vector3.new(x, 4.05, CONFIG.FenceDepth))
+	end
+	gatePart("GateBrace", Vector3.new(12, 0.22, 0.28), Vector3.new(32, 4, CONFIG.FenceDepth))
+	gatePart("PedestrianGapHeader", Vector3.new(3.5, 0.65, 0.3), Vector3.new(40, 7.3, CONFIG.FenceDepth), C.Warning)
+	local gateSign = sign("ExitGateSign", "RACCOON CITY\nSERVICE ROAD", Vector3.new(7, 1.7, 0.12),
+		Vector3.new(32, 5.85, CONFIG.FenceDepth - 0.3), C.Ink, nil, C.Warning)
+	gateSign.Parent = exitGate
+	for _, x in ipairs({gateLeft - 0.6, gateRight + 0.6}) do
+		lamp("ExitGateBeacon", Vector3.new(x, 8.8, CONFIG.FenceDepth), C.Warning, 1.1, 15)
+	end
+
+	-- Shelter outbuildings and snow-covered planting stay outside the driving lane.
+	local shedX, shedZ = -38, 94
+	part("ShedFloor", Vector3.new(14, 0.3, 14), Vector3.new(shedX, 0.15, shedZ), C.WoodDark)
+	for _, x in ipairs({shedX - 7, shedX + 7}) do
+		part("ShedWall", Vector3.new(0.5, 7, 14), Vector3.new(x, 3.7, shedZ), C.WoodLight)
+	end
+	part("ShedBack", Vector3.new(14, 7, 0.5), Vector3.new(shedX, 3.7, shedZ + 7), C.WoodLight)
+	for _, x in ipairs({shedX - 4.75, shedX + 4.75}) do
+		part("ShedFront", Vector3.new(4.5, 7, 0.5), Vector3.new(x, 3.7, shedZ - 7), C.Wood)
+	end
+	part("ShedRoof", Vector3.new(15.5, 0.4, 16), Vector3.new(shedX, 7.7, shedZ), C.Roof,
+		Enum.Material.Metal, CFrame.Angles(math.rad(6), 0, 0))
+	sign("ShedSign", "MAINTENANCE", Vector3.new(7, 1, 0.1), Vector3.new(shedX, 6.8, shedZ - 7.35), C.Ink)
+	for _, x in ipairs({shedX - 4.5, shedX + 4.5}) do
+		part("StorageCrate", Vector3.new(3.5, 3, 3), Vector3.new(x, 1.8, shedZ + 3.5), C.WoodDark)
+	end
+	local kennelX, kennelZ = -35, 70
+	for _, x in ipairs({kennelX - 2.8, kennelX + 2.8}) do
+		part("KennelSide", Vector3.new(0.3, 3.3, 5.5), Vector3.new(x, 1.75, kennelZ), C.WoodDark)
+	end
+	part("KennelBack", Vector3.new(5.8, 3.3, 0.3), Vector3.new(kennelX, 1.75, kennelZ + 2.75), C.WoodDark)
+	part("KennelRoof", Vector3.new(6.5, 0.4, 6.4), Vector3.new(kennelX, 3.65, kennelZ), C.Roof, Enum.Material.Metal)
+	part("KennelSnow", Vector3.new(6.5, 0.15, 6.4), Vector3.new(kennelX, 3.94, kennelZ), C.Snow, Enum.Material.Snow, nil, false)
+	sign("KennelPlate", "K-9 UNIT", Vector3.new(2.6, 0.6, 0.08), Vector3.new(kennelX, 3.45, kennelZ - 3.25), C.Ink)
+	for _, location in ipairs({Vector3.new(-47, 0, 28), Vector3.new(-45, 0, 113), Vector3.new(49, 0, 78), Vector3.new(49, 0, 25)}) do
+		part("CourtyardPineTrunk", Vector3.new(0.85, 9, 0.85), location + Vector3.new(0, 4.5, 0), C.WoodDark, Enum.Material.Wood)
+		for layer = 0, 2 do
+			local width = 8 - layer * 1.8
+			local crown = part("CourtyardPineCrown", Vector3.new(width, 5.5, width),
+				location + Vector3.new(0, 8 + layer * 2.8, 0), Color3.fromRGB(39, 62, 52), Enum.Material.Grass, nil, false)
+			crown.Shape = Enum.PartType.Ball
+		end
+	end
+	for _, x in ipairs({-18, -10, -2}) do
+		part("GardenBed", Vector3.new(6, 0.3, 12), Vector3.new(x, 0.16, 104), C.WoodDark, Enum.Material.Ground)
+		part("GardenSnow", Vector3.new(5.6, 0.14, 11.6), Vector3.new(x, 0.38, 104), C.Snow, Enum.Material.Snow, nil, false)
+	end
+	part("KeyShelf", Vector3.new(3, 0.15, 1), Vector3.new(-11, 2.35, 32.8), C.WoodLight, Enum.Material.Wood)
+	sign("KeyHookLabel", "VEHICLE KEYS", Vector3.new(3, 0.55, 0.08), Vector3.new(-11, 4.5, 34.35), C.Ink, nil, C.Warning)
+
 	marker("ElectricThreshold", Vector3.new(0, 4, 0), CONFIG.ElectricThresholdSize)
 	marker("YardCheckpoint", Vector3.new(0, 3, 10))
 	marker("InteriorTrigger", Vector3.new(0, 4, 31), CONFIG.InteriorTriggerSize)
 	marker("AttackerSpawn", Vector3.new(-7, 3, 45))
 	marker("SleeperSpawn", Vector3.new(8, 3.35, 43), nil, CFrame.Angles(math.pi / 2, 0, 0))
+	marker("GateInteraction", Vector3.new(34, 3, 117))
+	marker("DogSpawn", Vector3.new(-25, 3, 65))
+	marker("CarKeySpot", Vector3.new(-11, 3, 33))
+	marker("CarSpawn", Vector3.new(34, 0, 55), nil, CFrame.Angles(0, math.pi, 0))
+	marker("GateExitCheckpoint", Vector3.new(34, 3.5, 128))
+	marker("EmergencyGateGap", Vector3.new(40, 3, 120))
 	house.Parent = workspace
 	return house
 end

@@ -66,18 +66,23 @@ function Set-Source($Document, $Item, [string]$Source) {
 }
 
 $replacements = @(
-    @{ Name = 'HospitalLayout'; Class = 'Script'; File = 'HospitalLayout.server.lua' },
-    @{ Name = 'CourierGame'; Class = 'Script'; File = 'CourierGame.server.lua' },
-    @{ Name = 'CourierHUD'; Class = 'LocalScript'; File = 'CourierHUD.client.lua' },
-    @{ Name = 'ForestTunnelEncounter'; Class = 'Script'; File = 'ForestTunnelEncounter.server.lua' },
-    @{ Name = 'SurvivalWeaponServer'; Class = 'Script'; File = 'SurvivalWeaponServer.server.lua' },
-    @{ Name = 'SurvivalWeaponClient'; Class = 'LocalScript'; File = 'SurvivalWeaponClient.client.lua' }
+    @{ Name = 'HospitalLayout'; Class = 'Script'; File = 'HospitalLayout.server.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'CourierGame'; Class = 'Script'; File = 'CourierGame.server.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'CourierHUD'; Class = 'LocalScript'; File = 'CourierHUD.client.lua'; Parent = 'StarterPlayerScripts' },
+    @{ Name = 'ForestTunnelEncounter'; Class = 'Script'; File = 'ForestTunnelEncounter.server.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'SurvivalWeaponServer'; Class = 'Script'; File = 'SurvivalWeaponServer.server.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'SurvivalWeaponClient'; Class = 'LocalScript'; File = 'SurvivalWeaponClient.client.lua'; Parent = 'StarterPlayerScripts' }
 )
 $additions = @(
-    @{ Name = 'EscapeHouseBuilder'; Class = 'ModuleScript'; File = 'EscapeHouseBuilder.lua' },
-    @{ Name = 'CourierVehicle'; Class = 'ModuleScript'; File = 'CourierVehicle.lua' },
-    @{ Name = 'EscapeMutants'; Class = 'ModuleScript'; File = 'EscapeMutants.lua' },
-    @{ Name = 'EscapeChapter'; Class = 'Script'; File = 'EscapeChapter.server.lua' }
+    @{ Name = 'EscapeHouseBuilder'; Class = 'ModuleScript'; File = 'EscapeHouseBuilder.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'CourierVehicle'; Class = 'ModuleScript'; File = 'CourierVehicle.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'EscapeMutants'; Class = 'ModuleScript'; File = 'EscapeMutants.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'EscapeChapter'; Class = 'Script'; File = 'EscapeChapter.server.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'CourtyardVehicle'; Class = 'ModuleScript'; File = 'CourtyardVehicle.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'RaccoonCityBuilder'; Class = 'ModuleScript'; File = 'RaccoonCityBuilder.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'WildernessMutants'; Class = 'ModuleScript'; File = 'WildernessMutants.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'RaccoonJourney'; Class = 'Script'; File = 'RaccoonJourney.server.lua'; Parent = 'ServerScriptService' },
+    @{ Name = 'CityJourney'; Class = 'LocalScript'; File = 'CityJourney.client.lua'; Parent = 'StarterPlayerScripts' }
 )
 $allScripts = $replacements + $additions
 $snapshots = @{}
@@ -93,6 +98,12 @@ $place = Read-Place $inputFull
 $initialItemCount = $place.SelectNodes('//Item').Count
 $serverScripts = $place.SelectSingleNode("/roblox/Item[@class='ServerScriptService']")
 if ($null -eq $serverScripts) { throw 'ServerScriptService is missing from the original place.' }
+$starterPlayerScripts = $place.SelectSingleNode("/roblox/Item[@class='StarterPlayer']/Item[@class='StarterPlayerScripts']")
+if ($null -eq $starterPlayerScripts) { throw 'StarterPlayer.StarterPlayerScripts is missing from the original place.' }
+$targetParents = @{ ServerScriptService = $serverScripts; StarterPlayerScripts = $starterPlayerScripts }
+$workspaceNode = $place.SelectSingleNode("/roblox/Item[@class='Workspace']")
+if ($null -eq $workspaceNode) { throw 'Workspace is missing from the original place.' }
+$workspaceBefore = $workspaceNode.OuterXml
 $forest = $place.SelectSingleNode("/roblox/Item[@class='Workspace']/Item[@class='Model'][Properties/string[@name='Name' and text()='ForestTunnel']]")
 if ($null -eq $forest -or $forest.SelectNodes('.//Item').Count -eq 0) {
     throw 'ForestTunnel geometry is missing; export the current Studio place before packaging.'
@@ -103,11 +114,14 @@ $forestItemCount = $forest.SelectNodes('.//Item').Count
 foreach ($entry in $replacements) {
     $item = Get-ScriptItem $place $entry.Class $entry.Name
     if ($null -eq $item) { throw "Original script missing: $($entry.Name)" }
+    if ($item.ParentNode -ne $targetParents[$entry.Parent]) { throw "$($entry.Name) is not under $($entry.Parent)." }
     Set-Source $place $item $snapshots[$entry.Name]
 }
 
 $addedCount = 0
 foreach ($entry in $additions) {
+    $targetParent = $targetParents[$entry.Parent]
+    if ($null -eq $targetParent) { throw "Unknown target parent: $($entry.Parent)" }
     $item = Get-ScriptItem $place $entry.Class $entry.Name
     if ($null -eq $item) {
         $item = $place.CreateElement('Item')
@@ -119,7 +133,7 @@ foreach ($entry in $additions) {
         $nameNode.SetAttribute('name', 'Name')
         $nameNode.InnerText = $entry.Name
         [void]$properties.AppendChild($nameNode)
-        if ($entry.Class -eq 'Script') {
+        if ($entry.Class -eq 'Script' -or $entry.Class -eq 'LocalScript') {
             $disabled = $place.CreateElement('bool')
             $disabled.SetAttribute('name', 'Disabled')
             $disabled.InnerText = 'false'
@@ -129,10 +143,10 @@ foreach ($entry in $additions) {
             $runContext.InnerText = '0'
             [void]$properties.AppendChild($runContext)
         }
-        [void]$serverScripts.AppendChild($item)
+        [void]$targetParent.AppendChild($item)
         $addedCount++
-    } elseif ($item.ParentNode -ne $serverScripts) {
-        throw "$($entry.Name) already exists outside ServerScriptService."
+    } elseif ($item.ParentNode -ne $targetParent) {
+        throw "$($entry.Name) already exists outside $($entry.Parent)."
     }
     Set-Source $place $item $snapshots[$entry.Name]
 }
@@ -152,12 +166,19 @@ $finalItemCount = $validation.SelectNodes('//Item').Count
 if ($finalItemCount -ne $initialItemCount + $addedCount) { throw 'Unexpected instance count after packaging.' }
 $validatedForest = $validation.SelectSingleNode("/roblox/Item[@class='Workspace']/Item[@class='Model'][Properties/string[@name='Name' and text()='ForestTunnel']]")
 if ($validatedForest.OuterXml -cne $forestBefore) { throw 'ForestTunnel geometry changed during packaging.' }
+$validatedWorkspace = $validation.SelectSingleNode("/roblox/Item[@class='Workspace']")
+if ($validatedWorkspace.OuterXml -cne $workspaceBefore) { throw 'Workspace assets changed during packaging.' }
+$validatedParents = @{
+    ServerScriptService = $validation.SelectSingleNode("/roblox/Item[@class='ServerScriptService']")
+    StarterPlayerScripts = $validation.SelectSingleNode("/roblox/Item[@class='StarterPlayer']/Item[@class='StarterPlayerScripts']")
+}
 $report = foreach ($entry in $allScripts) {
     $item = Get-ScriptItem $validation $entry.Class $entry.Name
     if ($null -eq $item) { throw "Packaged script is missing: $($entry.Name)" }
+    if ($item.ParentNode -ne $validatedParents[$entry.Parent]) { throw "Packaged script has wrong parent: $($entry.Name)" }
     $embedded = Normalize-Lines $item.SelectSingleNode("Properties/ProtectedString[@name='Source']").InnerText
     if ($embedded -cne $snapshots[$entry.Name]) { throw "Source verification failed: $($entry.Name)" }
-    [pscustomobject]@{ Name = $entry.Name; Class = $entry.Class; Characters = $embedded.Length }
+    [pscustomobject]@{ Name = $entry.Name; Class = $entry.Class; Parent = $entry.Parent; Characters = $embedded.Length }
 }
 if ((Get-Hash $inputFull) -ne $originalHash) { throw 'Original place changed externally while packaging; rerun with a stable input.' }
 if ([System.IO.File]::Exists($outputFull)) {
@@ -176,6 +197,8 @@ $report | Format-Table -AutoSize
     PackagedItems = $finalItemCount
     AddedItems = $addedCount
     ForestTunnelItemsPreserved = $forestItemCount
+    WorkspacePreserved = $true
+    SourcesVerified = $allScripts.Count
     OriginalSha256 = $originalHash
     OriginalUnmodified = ((Get-Hash $inputFull) -eq $originalHash)
 } | Format-List
